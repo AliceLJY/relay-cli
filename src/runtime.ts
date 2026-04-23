@@ -62,9 +62,27 @@ export function spawnAgent(state: DuoState, input: SpawnAgentInput): { state: Du
   const cwd = input.cwd || state.projectRoot;
   const initialPrompt = input.prompt ? buildAgentIntro({ id, runtime: input.runtime, depth }, input.prompt) : undefined;
   const shellCommand = shellJoin([runtime.command, ...runtime.args, ...(initialPrompt ? [initialPrompt] : [])]);
-  const started = spawnSync("tmux", ["new-session", "-d", "-s", tmuxSession, "-c", cwd, shellCommand], {
-    encoding: "utf8"
-  });
+  const started = spawnSync(
+    "tmux",
+    [
+      "new-session",
+      "-d",
+      "-s",
+      tmuxSession,
+      "-c",
+      cwd,
+      "-e",
+      `DUO_PROCESS_ID=${id}`,
+      "-e",
+      `DUO_RUNTIME=${input.runtime}`,
+      "-e",
+      `DUO_DEPTH=${depth}`,
+      shellCommand
+    ],
+    {
+      encoding: "utf8"
+    }
+  );
 
   if (started.status !== 0) {
     throw new Error(`tmux failed to start ${input.runtime}: ${started.stderr || started.stdout}`);
