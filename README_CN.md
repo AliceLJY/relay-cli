@@ -110,3 +110,7 @@ duo mcp
 ## 状态
 
 这是一个个人实验级的工具。能用，也在持续打磨，API 表面可能没有 deprecation notice 就直接变动。更适合当参考或起点，不适合当稳定依赖。
+
+## License
+
+MIT，详见 [LICENSE](./LICENSE)。

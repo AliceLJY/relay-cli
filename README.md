@@ -114,3 +114,7 @@ See [README_CN.md](./README_CN.md).
 ## Status
 
 This is a personal experiment-grade tool. It works, it is under active shaping, and the surface may shift without deprecation notices. Use it as a reference or a starting point rather than a stable dependency.
+
+## License
+
+MIT — see [LICENSE](./LICENSE).
