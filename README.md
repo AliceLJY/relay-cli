@@ -79,3 +79,5 @@ duo mcp
 ```
 
 The repo also carries a project-level [`.mcp.json`](/Users/USER/Projects/relay-cli/.mcp.json) so Claude Code can discover the `duo` MCP server inside this project on the MacBook.
+
+For the actual MacBook operator workflow, see [docs/macbook-start-playbook.md](/Users/USER/Projects/relay-cli/docs/macbook-start-playbook.md).
