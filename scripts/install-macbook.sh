@@ -3,9 +3,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET_HOST="${DUO_MAC_HOST:-mac}"
-TARGET_DIR="${DUO_MAC_DIR:-/Users/USER/Projects/relay-cli}"
+TARGET_DIR="${DUO_MAC_DIR:-$HOME/Projects/relay-cli}"
 DUO_BIN="${DUO_BIN:-/opt/homebrew/bin/duo}"
-CLAUDE_BIN="${DUO_CLAUDE_BIN:-/Users/USER/.local/bin/claude}"
+CLAUDE_BIN="${DUO_CLAUDE_BIN:-$HOME/.local/bin/claude}"
 
 ssh "$TARGET_HOST" "mkdir -p '$TARGET_DIR'"
 
