@@ -58,6 +58,20 @@ npm link
 duo status
 ```
 
+## MacBook Install
+
+This repo is created on the Mac mini, but Alice usually works from the MacBook.
+
+Use the helper script from the mini:
+
+```sh
+npm run install:macbook
+```
+
+It syncs the source to `mac:~/Projects/relay-cli`, installs dependencies with `npm ci`, runs checks, and links `duo` on the MacBook.
+
+Current MacBook runtime requirement: `codex` is available, but `claude` must also be installed on the MacBook for full Codex/Claude orchestration.
+
 To expose the control plane to an agent, configure that agent with an MCP server command equivalent to:
 
 ```sh
