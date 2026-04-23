@@ -38,6 +38,16 @@ export function readWatchSnapshot(
 }
 
 export function renderWatchFrame(snapshot: WatchSnapshot): string {
+  return renderWatchFrameWithLayout(snapshot, {
+    layout: "stack",
+    terminalWidth: 160
+  });
+}
+
+export function renderWatchFrameWithLayout(
+  snapshot: WatchSnapshot,
+  options: { layout: "stack" | "columns"; terminalWidth: number }
+): string {
   const header = [
     "duo watch",
     `captured: ${snapshot.capturedAt}`,
@@ -47,6 +57,10 @@ export function renderWatchFrame(snapshot: WatchSnapshot): string {
 
   if (snapshot.processes.length === 0) {
     return `${header}\n\nNo visible duo processes.\n`;
+  }
+
+  if (options.layout === "columns" && snapshot.processes.length >= 2) {
+    return renderColumnsFrame(snapshot, header, options.terminalWidth);
   }
 
   const sections = snapshot.processes.map(({ process, output }) => {
@@ -88,4 +102,51 @@ function peekProcessOutput(processRecord: DuoProcess, lines: number): string {
     return "[tmux session unavailable]";
   }
   return captured.stdout;
+}
+
+function renderColumnsFrame(snapshot: WatchSnapshot, header: string, terminalWidth: number): string {
+  const selected = snapshot.processes.slice(0, 2);
+  const gap = "  ";
+  const columnWidth = Math.max(40, Math.floor((terminalWidth - gap.length) / 2));
+
+  const columns = selected.map(({ process, output }) => {
+    const title = `${process.name} | ${process.runtime} | ${process.status}`;
+    const body = (output.trim() || "[no captured output yet]").split("\n");
+    return fitBlock([title, "-".repeat(Math.max(10, columnWidth - 2)), ...body], columnWidth);
+  });
+
+  const maxLines = Math.max(columns[0].length, columns[1].length);
+  const rows: string[] = [`${header}\n`];
+  for (let index = 0; index < maxLines; index += 1) {
+    const left = columns[0][index] || "".padEnd(columnWidth, " ");
+    const right = columns[1][index] || "".padEnd(columnWidth, " ");
+    rows.push(`${left}${gap}${right}`);
+  }
+
+  if (snapshot.processes.length > 2) {
+    const rest = snapshot.processes
+      .slice(2)
+      .map(({ process }) => `${process.name} (${process.runtime}, ${process.status})`)
+      .join(", ");
+    rows.push("");
+    rows.push(`more processes: ${rest}`);
+  }
+
+  rows.push("");
+  return rows.join("\n");
+}
+
+function fitBlock(lines: string[], width: number): string[] {
+  const output: string[] = [];
+  for (const line of lines) {
+    const normalized = line.replace(/\t/g, "    ");
+    if (normalized.length === 0) {
+      output.push("".padEnd(width, " "));
+      continue;
+    }
+    for (let index = 0; index < normalized.length; index += width) {
+      output.push(normalized.slice(index, index + width).padEnd(width, " "));
+    }
+  }
+  return output;
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { startMcpServer } from "./mcp-server.js";
-import { clearTerminal, readWatchSnapshot, renderWatchFrame } from "./watch.js";
+import { clearTerminal, readWatchSnapshot, renderWatchFrameWithLayout } from "./watch.js";
 import {
   answerLatestHumanRequest,
   latestEvents,
@@ -147,9 +147,18 @@ program
   .option("-n, --lines <lines>", "lines per process pane", "30")
   .option("-i, --interval <ms>", "refresh interval in milliseconds", "1500")
   .option("--recent-seconds <seconds>", "also show recently finished processes for this many seconds", "120")
+  .option("--layout <layout>", "stack or columns", "columns")
   .option("--all", "include inactive processes")
   .option("--once", "render one snapshot and exit")
-  .action(async (options: { lines: string; interval: string; recentSeconds: string; all?: boolean; once?: boolean }) => {
+  .action(
+    async (options: {
+      lines: string;
+      interval: string;
+      recentSeconds: string;
+      layout: "stack" | "columns";
+      all?: boolean;
+      once?: boolean;
+    }) => {
     const root = projectRoot();
     const lines = Number(options.lines);
     const interval = Number(options.interval);
@@ -164,13 +173,19 @@ program
       if (process.stdout.isTTY) {
         clearTerminal();
       }
-      process.stdout.write(renderWatchFrame(snapshot));
+      process.stdout.write(
+        renderWatchFrameWithLayout(snapshot, {
+          layout: options.layout,
+          terminalWidth: process.stdout.columns || 160
+        })
+      );
       if (options.once) {
         return;
       }
       await sleep(interval);
     } while (true);
-  });
+    }
+  );
 
 program.parseAsync(process.argv).catch((error: unknown) => {
   console.error((error as Error).message);
