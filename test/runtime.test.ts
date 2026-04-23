@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveCommand } from "../src/runtime.js";
+import { parseClaudeAuthStatus, resolveCommand } from "../src/runtime.js";
 
 test("resolveCommand finds executable fallback paths outside PATH", () => {
   const root = mkdtempSync(join(tmpdir(), "duo-runtime-"));
@@ -12,4 +12,14 @@ test("resolveCommand finds executable fallback paths outside PATH", () => {
   chmodSync(executable, 0o755);
 
   assert.equal(resolveCommand("duo_fake_agent", [root]), executable);
+});
+
+test("parseClaudeAuthStatus reads Claude auth JSON output", () => {
+  assert.deepEqual(parseClaudeAuthStatus('{"loggedIn":false,"authMethod":"none"}'), {
+    loggedIn: false
+  });
+  assert.deepEqual(parseClaudeAuthStatus('{"loggedIn":true,"authMethod":"oauth"}'), {
+    loggedIn: true
+  });
+  assert.equal(parseClaudeAuthStatus("not json"), undefined);
 });

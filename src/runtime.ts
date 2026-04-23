@@ -287,20 +287,24 @@ export function checkRuntimeHealth(runtime: RuntimeInfo): RuntimeHealth {
   }
 
   if (runtime.name === "claude") {
-    const result = spawnSync(
-      runtime.command,
-      ["-p", "--no-session-persistence", "--tools", "", "--model", "sonnet", "--effort", "low", "Reply with OK."],
-      {
-        encoding: "utf8",
-        timeout: 15000
-      }
-    );
+    const result = spawnSync(runtime.command, ["auth", "status"], {
+      encoding: "utf8",
+      timeout: 5000
+    });
     const output = `${result.stdout || ""}${result.stderr || ""}`.trim();
-    if (output.includes("Not logged in")) {
+    const authStatus = parseClaudeAuthStatus(output);
+    if (authStatus?.loggedIn === false) {
       return {
         checkedAt: nowIso(),
         ok: false,
-        message: `Claude Code CLI is installed but not logged in; run \`${runtime.command} /login\` from the MacBook.`
+        message: `Claude Code CLI is installed but not logged in; run \`${runtime.command} auth login --claudeai\` from the MacBook.`
+      };
+    }
+    if (authStatus?.loggedIn === true) {
+      return {
+        checkedAt: nowIso(),
+        ok: true,
+        message: "ok"
       };
     }
     if (result.error) {
@@ -327,6 +331,18 @@ export function checkRuntimeHealth(runtime: RuntimeInfo): RuntimeHealth {
     ok: result.status === 0,
     message: result.status === 0 ? output || "ok" : output || `exited with status ${result.status}`
   };
+}
+
+export function parseClaudeAuthStatus(output: string): { loggedIn: boolean } | undefined {
+  try {
+    const parsed = JSON.parse(output) as { loggedIn?: unknown };
+    if (typeof parsed.loggedIn === "boolean") {
+      return { loggedIn: parsed.loggedIn };
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }
 
 function defaultFallbackDirs(): string[] {
