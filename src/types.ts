@@ -77,5 +77,13 @@ export interface RuntimeInfo {
   command: string;
   args: string[];
   available: boolean;
+  configuredCommand?: string;
   resolvedPath?: string;
+  health?: RuntimeHealth;
+}
+
+export interface RuntimeHealth {
+  checkedAt: string;
+  ok: boolean;
+  message: string;
 }

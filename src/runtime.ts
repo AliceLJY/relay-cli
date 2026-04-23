@@ -1,6 +1,9 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import type { DuoProcess, DuoState, RuntimeInfo, RuntimeName } from "./types.js";
+import { accessSync, constants } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { DuoProcess, DuoState, RuntimeHealth, RuntimeInfo, RuntimeName } from "./types.js";
 import { appendEvent, assertNotBraked, recordFailure, setBrake, writeState } from "./state.js";
 import { nowIso, shortId } from "./ids.js";
 
@@ -18,18 +21,23 @@ export interface SpawnAgentInput {
   waitMs?: number;
 }
 
-export function listRuntimes(): RuntimeInfo[] {
+export function listRuntimes(options: { checkAuth?: boolean } = {}): RuntimeInfo[] {
   return (Object.keys(RUNTIME_COMMANDS) as RuntimeName[]).map((name) => {
     const configured = process.env[RUNTIME_COMMANDS[name].env] || RUNTIME_COMMANDS[name].command;
     const [command, ...args] = configured.split(" ").filter(Boolean);
     const resolvedPath = resolveCommand(command);
-    return {
+    const info: RuntimeInfo = {
       name,
-      command,
+      command: resolvedPath || command,
       args,
       available: Boolean(resolvedPath),
+      configuredCommand: configured,
       resolvedPath
     };
+    if (options.checkAuth) {
+      info.health = checkRuntimeHealth(info);
+    }
+    return info;
   });
 }
 
@@ -249,12 +257,89 @@ function markProcess(state: DuoState, processId: string, status: DuoProcess["sta
   );
 }
 
-function resolveCommand(command: string): string | undefined {
+export function resolveCommand(command: string, fallbackDirs = defaultFallbackDirs()): string | undefined {
+  if (command.includes("/")) {
+    return isExecutable(command) ? command : undefined;
+  }
+
   const result = spawnSync("which", [command], { encoding: "utf8" });
   if (result.status === 0) {
     return result.stdout.trim();
   }
+
+  for (const dir of fallbackDirs) {
+    const candidate = join(dir, command);
+    if (isExecutable(candidate)) {
+      return candidate;
+    }
+  }
+
   return undefined;
+}
+
+export function checkRuntimeHealth(runtime: RuntimeInfo): RuntimeHealth {
+  if (!runtime.available) {
+    return {
+      checkedAt: nowIso(),
+      ok: false,
+      message: "binary not found"
+    };
+  }
+
+  if (runtime.name === "claude") {
+    const result = spawnSync(
+      runtime.command,
+      ["-p", "--no-session-persistence", "--tools", "", "--model", "sonnet", "--effort", "low", "Reply with OK."],
+      {
+        encoding: "utf8",
+        timeout: 15000
+      }
+    );
+    const output = `${result.stdout || ""}${result.stderr || ""}`.trim();
+    if (output.includes("Not logged in")) {
+      return {
+        checkedAt: nowIso(),
+        ok: false,
+        message: `Claude Code CLI is installed but not logged in; run \`${runtime.command} /login\` from the MacBook.`
+      };
+    }
+    if (result.error) {
+      return {
+        checkedAt: nowIso(),
+        ok: false,
+        message: result.error.message
+      };
+    }
+    return {
+      checkedAt: nowIso(),
+      ok: result.status === 0,
+      message: result.status === 0 ? "ok" : output || `exited with status ${result.status}`
+    };
+  }
+
+  const result = spawnSync(runtime.command, ["--version"], {
+    encoding: "utf8",
+    timeout: 5000
+  });
+  const output = `${result.stdout || ""}${result.stderr || ""}`.trim();
+  return {
+    checkedAt: nowIso(),
+    ok: result.status === 0,
+    message: result.status === 0 ? output || "ok" : output || `exited with status ${result.status}`
+  };
+}
+
+function defaultFallbackDirs(): string[] {
+  return [join(homedir(), ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"];
+}
+
+function isExecutable(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function sendInputToTmux(tmuxSession: string, input: string): void {

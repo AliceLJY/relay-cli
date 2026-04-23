@@ -71,9 +71,13 @@ program.command("abort").description("Kill running duo tmux sessions and freeze 
   console.log("aborted: running duo processes were closed");
 });
 
-program.command("runtimes").description("List configured Codex/Claude runtimes.").action(() => {
-  console.log(JSON.stringify(listRuntimes(), null, 2));
-});
+program
+  .command("runtimes")
+  .description("List configured Codex/Claude runtimes.")
+  .option("--check-auth", "also run a health/auth probe")
+  .action((options: { checkAuth?: boolean }) => {
+    console.log(JSON.stringify(listRuntimes({ checkAuth: options.checkAuth }), null, 2));
+  });
 
 program
   .command("spawn")
