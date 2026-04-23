@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { DuoEvent, DuoState, HumanRequest } from "./types.js";
 import { nowIso, shortId } from "./ids.js";
@@ -19,6 +19,10 @@ export function duoDir(projectRoot = projectRootFrom()): string {
 
 export function statePath(projectRoot = projectRootFrom()): string {
   return join(duoDir(projectRoot), "state.json");
+}
+
+function lockPath(projectRoot = projectRootFrom()): string {
+  return join(duoDir(projectRoot), "state.lock");
 }
 
 export function defaultState(projectRoot = projectRootFrom()): DuoState {
@@ -53,6 +57,21 @@ export function writeState(state: DuoState): void {
   const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, "utf8");
   renameSync(tmp, path);
+}
+
+export function withLockedState<T>(
+  projectRoot: string,
+  fn: (state: DuoState) => { state: DuoState; result: T }
+): T {
+  acquireLock(projectRoot);
+  try {
+    const current = readState(projectRoot);
+    const { state, result } = fn(current);
+    writeState(state);
+    return result;
+  } finally {
+    releaseLock(projectRoot);
+  }
 }
 
 export function appendEvent(
@@ -184,4 +203,29 @@ export function assertNotBraked(state: DuoState): void {
 
 export function latestEvents(state: DuoState, count: number): DuoEvent[] {
   return state.events.slice(Math.max(0, state.events.length - count));
+}
+
+function acquireLock(projectRoot: string): void {
+  const path = lockPath(projectRoot);
+  mkdirSync(duoDir(projectRoot), { recursive: true });
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      mkdirSync(path);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+      sleep(25);
+    }
+  }
+  throw new Error(`timed out acquiring duo state lock: ${path}`);
+}
+
+function releaseLock(projectRoot: string): void {
+  rmSync(lockPath(projectRoot), { recursive: true, force: true });
+}
+
+function sleep(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }

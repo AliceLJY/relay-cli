@@ -4,7 +4,11 @@ import { z } from "zod";
 import { waitForHumanResponse } from "./human.js";
 import {
   addHumanRequest,
+  answerLatestHumanRequest,
+  clearBrake,
   readState,
+  setBrake,
+  withLockedState,
   writeState,
   projectRootFrom
 } from "./state.js";
@@ -15,6 +19,7 @@ import {
   getOutput,
   listRuntimes,
   sendInput,
+  stabilizeProcess,
   spawnAgent
 } from "./runtime.js";
 import type { RuntimeName } from "./types.js";
@@ -52,17 +57,19 @@ export async function startMcpServer(projectRoot = projectRootFrom()): Promise<v
       waitMs: z.number().int().min(0).max(10000).optional()
     },
     async (input) => {
-      const state = applyRuntimeLimits(readState(projectRoot));
-      writeState(state);
-      const result = spawnAgent(state, {
-        runtime: input.runtime as RuntimeName,
-        name: input.name,
-        prompt: input.prompt,
-        parentId: input.parentId || process.env.DUO_PROCESS_ID,
-        cwd: projectRoot,
-        waitMs: input.waitMs
+      const result = withLockedState(projectRoot, (current) => {
+        const state = applyRuntimeLimits(current);
+        const spawned = spawnAgent(state, {
+          runtime: input.runtime as RuntimeName,
+          name: input.name,
+          prompt: input.prompt,
+          parentId: input.parentId || process.env.DUO_PROCESS_ID,
+          cwd: projectRoot
+        });
+        return { state: spawned.state, result: spawned.process };
       });
-      return textResult(result.process);
+      stabilizeProcess(result, input.waitMs || 0);
+      return textResult(result);
     }
   );
 
@@ -74,9 +81,13 @@ export async function startMcpServer(projectRoot = projectRootFrom()): Promise<v
       input: z.string()
     },
     async (input) => {
-      const state = applyRuntimeLimits(readState(projectRoot));
-      const next = sendInput(state, input.processId, input.input);
-      writeState(next);
+      withLockedState(projectRoot, (current) => {
+        const state = applyRuntimeLimits(current);
+        return {
+          state: sendInput(state, input.processId, input.input),
+          result: undefined
+        };
+      });
       return textResult({ ok: true, processId: input.processId });
     }
   );
@@ -89,16 +100,19 @@ export async function startMcpServer(projectRoot = projectRootFrom()): Promise<v
       lines: z.number().int().min(1).max(500).optional()
     },
     async (input) => {
-      const state = readState(projectRoot);
-      const result = getOutput(state, input.processId, input.lines || 80);
-      writeState(result.state);
-      return textResult({ processId: input.processId, output: result.output });
+      const result = withLockedState(projectRoot, (state) => {
+        const next = getOutput(state, input.processId, input.lines || 80);
+        return { state: next.state, result: next.output };
+      });
+      return textResult({ processId: input.processId, output: result });
     }
   );
 
   server.tool("get_status", "Return current duo status, processes, and pending human requests.", {}, async () => {
-    const state = applyRuntimeLimits(readState(projectRoot));
-    writeState(state);
+    const state = withLockedState(projectRoot, (current) => {
+      const next = applyRuntimeLimits(current);
+      return { state: next, result: next };
+    });
     return textResult(state);
   });
 
@@ -109,8 +123,10 @@ export async function startMcpServer(projectRoot = projectRootFrom()): Promise<v
       processId: z.string()
     },
     async (input) => {
-      const next = cancelAgent(readState(projectRoot), input.processId);
-      writeState(next);
+      withLockedState(projectRoot, (state) => ({
+        state: cancelAgent(state, input.processId),
+        result: undefined
+      }));
       return textResult({ ok: true, processId: input.processId });
     }
   );
@@ -122,8 +138,10 @@ export async function startMcpServer(projectRoot = projectRootFrom()): Promise<v
       processId: z.string()
     },
     async (input) => {
-      const next = closeProcess(readState(projectRoot), input.processId);
-      writeState(next);
+      withLockedState(projectRoot, (state) => ({
+        state: closeProcess(state, input.processId),
+        result: undefined
+      }));
       return textResult({ ok: true, processId: input.processId });
     }
   );
@@ -140,14 +158,16 @@ export async function startMcpServer(projectRoot = projectRootFrom()): Promise<v
       timeoutSeconds: z.number().int().min(30).max(3600).default(1800)
     },
     async (input) => {
-      const { state, request } = addHumanRequest(readState(projectRoot), {
-        reason: input.reason,
-        question: input.question,
-        urgency: input.urgency,
-        options: input.options,
-        recommended: input.recommended
+      const request = withLockedState(projectRoot, (current) => {
+        const next = addHumanRequest(current, {
+          reason: input.reason,
+          question: input.question,
+          urgency: input.urgency,
+          options: input.options,
+          recommended: input.recommended
+        });
+        return { state: next.state, result: next.request };
       });
-      writeState(state);
       const response = await waitForHumanResponse(projectRoot, request.id, input.timeoutSeconds);
       return textResult({ requestId: request.id, response });
     }

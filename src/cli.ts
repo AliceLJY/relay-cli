@@ -3,10 +3,10 @@ import { Command } from "commander";
 import { startMcpServer } from "./mcp-server.js";
 import {
   answerLatestHumanRequest,
-  clearBrake,
   latestEvents,
   readState,
   setBrake,
+  withLockedState,
   writeState,
   projectRootFrom
 } from "./state.js";
@@ -16,6 +16,7 @@ import {
   getOutput,
   listRuntimes,
   sendInput,
+  stabilizeProcess,
   spawnAgent
 } from "./runtime.js";
 import type { RuntimeName } from "./types.js";
@@ -37,8 +38,10 @@ program.command("mcp").description("Run the duo MCP server over stdio.").action(
 
 program.command("status").description("Show current duo status.").action(() => {
   const root = projectRoot();
-  const state = applyRuntimeLimits(readState(root));
-  writeState(state);
+  const state = withLockedState(root, (current) => {
+    const next = applyRuntimeLimits(current);
+    return { state: next, result: next };
+  });
   printStatus(state);
 });
 
@@ -47,8 +50,10 @@ program
   .description("Freeze new autonomous spawn/send actions without killing current panes.")
   .argument("[reason]", "why the brake is being applied", "human brake")
   .action((reason: string) => {
-    const state = setBrake(readState(projectRoot()), reason, "human");
-    writeState(state);
+    withLockedState(projectRoot(), (state) => ({
+      state: setBrake(state, reason, "human"),
+      result: undefined
+    }));
     console.log(`braked: ${reason}`);
   });
 
@@ -58,16 +63,22 @@ program
   .argument("[instruction...]", "direction to give agents before resuming")
   .action((instructionParts: string[]) => {
     const instruction = instructionParts.join(" ").trim() || "resume";
-    const state = answerLatestHumanRequest(readState(projectRoot()), instruction);
-    writeState(state);
+    withLockedState(projectRoot(), (state) => ({
+      state: answerLatestHumanRequest(state, instruction),
+      result: undefined
+    }));
     console.log(`resumed: ${instruction}`);
   });
 
 program.command("abort").description("Kill running duo tmux sessions and freeze the run.").action(() => {
   const root = projectRoot();
-  const closed = closeAllProcesses(readState(root), "aborted");
-  const state = setBrake(closed, "aborted by human", "human");
-  writeState(state);
+  withLockedState(root, (state) => {
+    const closed = closeAllProcesses(state, "aborted");
+    return {
+      state: setBrake(closed, "aborted by human", "human"),
+      result: undefined
+    };
+  });
   console.log("aborted: running duo processes were closed");
 });
 
@@ -87,16 +98,18 @@ program
   .option("--name <name>", "process display name")
   .action((runtime: RuntimeName, promptParts: string[], options: { name?: string }) => {
     const root = projectRoot();
-    const state = applyRuntimeLimits(readState(root));
-    writeState(state);
-    const result = spawnAgent(state, {
-      runtime,
-      name: options.name,
-      prompt: promptParts.join(" ").trim() || undefined,
-      cwd: root,
-      waitMs: 1000
+    const result = withLockedState(root, (current) => {
+      const state = applyRuntimeLimits(current);
+      const spawned = spawnAgent(state, {
+        runtime,
+        name: options.name,
+        prompt: promptParts.join(" ").trim() || undefined,
+        cwd: root
+      });
+      return { state: spawned.state, result: spawned.process };
     });
-    console.log(JSON.stringify(result.process, null, 2));
+    stabilizeProcess(result, 1000);
+    console.log(JSON.stringify(result, null, 2));
   });
 
 program
@@ -106,8 +119,10 @@ program
   .argument("<input...>")
   .action((processId: string, inputParts: string[]) => {
     const root = projectRoot();
-    const next = sendInput(readState(root), processId, inputParts.join(" "));
-    writeState(next);
+    withLockedState(root, (state) => ({
+      state: sendInput(state, processId, inputParts.join(" ")),
+      result: undefined
+    }));
     console.log(`sent: ${processId}`);
   });
 
@@ -118,9 +133,11 @@ program
   .option("-n, --lines <lines>", "number of lines", "80")
   .action((processId: string, options: { lines: string }) => {
     const root = projectRoot();
-    const result = getOutput(readState(root), processId, Number(options.lines));
-    writeState(result.state);
-    process.stdout.write(result.output);
+    const result = withLockedState(root, (state) => {
+      const next = getOutput(state, processId, Number(options.lines));
+      return { state: next.state, result: next.output };
+    });
+    process.stdout.write(result);
   });
 
 program.parseAsync(process.argv).catch((error: unknown) => {

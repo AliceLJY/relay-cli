@@ -1,10 +1,10 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { accessSync, constants } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DuoProcess, DuoState, RuntimeHealth, RuntimeInfo, RuntimeName } from "./types.js";
-import { appendEvent, assertNotBraked, recordFailure, setBrake, writeState } from "./state.js";
+import { appendEvent, assertNotBraked, recordFailure, setBrake } from "./state.js";
 import { nowIso, shortId } from "./ids.js";
 
 const RUNTIME_COMMANDS: Record<RuntimeName, { env: string; command: string }> = {
@@ -18,7 +18,6 @@ export interface SpawnAgentInput {
   prompt?: string;
   parentId?: string;
   cwd?: string;
-  waitMs?: number;
 }
 
 export function listRuntimes(options: { checkAuth?: boolean } = {}): RuntimeInfo[] {
@@ -60,7 +59,8 @@ export function spawnAgent(state: DuoState, input: SpawnAgentInput): { state: Du
   const id = shortId("proc");
   const tmuxSession = `duo_${input.runtime}_${randomBytes(3).toString("hex")}`;
   const cwd = input.cwd || state.projectRoot;
-  const shellCommand = shellJoin([runtime.command, ...runtime.args]);
+  const initialPrompt = input.prompt ? buildAgentIntro({ id, runtime: input.runtime, depth }, input.prompt) : undefined;
+  const shellCommand = shellJoin([runtime.command, ...runtime.args, ...(initialPrompt ? [initialPrompt] : [])]);
   const started = spawnSync("tmux", ["new-session", "-d", "-s", tmuxSession, "-c", cwd, shellCommand], {
     encoding: "utf8"
   });
@@ -84,7 +84,7 @@ export function spawnAgent(state: DuoState, input: SpawnAgentInput): { state: Du
     failureCount: 0
   };
 
-  let nextState = appendEvent(
+  const nextState = appendEvent(
     {
       ...state,
       processes: {
@@ -96,25 +96,6 @@ export function spawnAgent(state: DuoState, input: SpawnAgentInput): { state: Du
     `spawned ${input.runtime} as ${processRecord.name}`,
     id
   );
-
-  if (input.prompt) {
-    const intro = buildAgentIntro(processRecord, input.prompt);
-    sendInputToTmux(processRecord.tmuxSession, intro);
-    const updated = { ...processRecord, lastOutputAt: nowIso(), updatedAt: nowIso() };
-    nextState = {
-      ...nextState,
-      processes: {
-        ...nextState.processes,
-        [id]: updated
-      }
-    };
-  }
-
-  writeState(nextState);
-
-  if (input.waitMs && input.waitMs > 0) {
-    wait(input.waitMs);
-  }
 
   return { state: nextState, process: nextState.processes[id] };
 }
@@ -129,7 +110,7 @@ export function sendInput(state: DuoState, processId: string, input: string): Du
     throw new Error(`process is not input-ready: ${processRecord.status}`);
   }
 
-  sendInputToTmux(processRecord.tmuxSession, input);
+  sendInputToTmux(processRecord.tmuxSession, input, processRecord.runtime);
   const updated = {
     ...processRecord,
     status: "running" as const,
@@ -229,8 +210,16 @@ export function safeToolCall<T>(state: DuoState, fn: () => T): { state: DuoState
     return { state, result: fn() };
   } catch (error) {
     const next = recordFailure(state, (error as Error).message);
-    writeState(next);
     return { state: next, error: error as Error };
+  }
+}
+
+export function stabilizeProcess(processRecord: DuoProcess, waitMs = 1000): void {
+  if (processRecord.runtime === "codex") {
+    autoAdvanceCodexTrust(processRecord.tmuxSession);
+  }
+  if (waitMs > 0) {
+    wait(waitMs);
   }
 }
 
@@ -358,7 +347,7 @@ function isExecutable(path: string): boolean {
   }
 }
 
-function sendInputToTmux(tmuxSession: string, input: string): void {
+function sendInputToTmux(tmuxSession: string, input: string, runtime?: RuntimeName): void {
   const sent = spawnSync("tmux", ["send-keys", "-t", tmuxSession, "-l", input], {
     encoding: "utf8"
   });
@@ -371,22 +360,61 @@ function sendInputToTmux(tmuxSession: string, input: string): void {
   if (enter.status !== 0) {
     throw new Error(`tmux enter failed: ${enter.stderr || enter.stdout}`);
   }
+  if (runtime === "codex") {
+    wait(150);
+    const secondEnter = spawnSync("tmux", ["send-keys", "-t", tmuxSession, "Enter"], {
+      encoding: "utf8"
+    });
+    if (secondEnter.status !== 0) {
+      throw new Error(`tmux second enter failed: ${secondEnter.stderr || secondEnter.stdout}`);
+    }
+  }
 }
 
-function buildAgentIntro(processRecord: DuoProcess, prompt: string): string {
+function buildAgentIntro(
+  processRecord: Pick<DuoProcess, "id" | "runtime" | "depth">,
+  prompt: string
+): string {
+  const compactPrompt = prompt.replace(/\s+/g, " ").trim();
   return [
-    "[DUO ORCHESTRATION CONTEXT]",
-    `DUO_PROCESS_ID=${processRecord.id}`,
-    `DUO_RUNTIME=${processRecord.runtime}`,
-    `DUO_DEPTH=${processRecord.depth}`,
-    "",
+    `DUO_PROCESS_ID=${processRecord.id}.`,
+    `DUO_RUNTIME=${processRecord.runtime}.`,
+    `DUO_DEPTH=${processRecord.depth}.`,
     "You are running inside duo, a local Codex/Claude relay.",
-    "If MCP tools are configured, use duo tools for status, spawning, output reads, and human checkpoints.",
-    "Respect Alice's brake: stop autonomous action when duo is braked or when need_human is required.",
-    "",
-    "[USER TASK]",
-    prompt
-  ].join("\n");
+    "If duo MCP tools are configured, use them for status, spawning, output reads, and human checkpoints.",
+    "Respect Alice's brake and stop when need_human is required.",
+    `Task: ${compactPrompt}`
+  ].join(" ");
+}
+
+function autoAdvanceCodexTrust(tmuxSession: string): void {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const pane = capturePane(tmuxSession, 80);
+    if (!pane) {
+      return;
+    }
+    if (pane.includes("Do you trust the contents of this directory?") || pane.includes("Press enter to continue")) {
+      spawnSync("tmux", ["send-keys", "-t", tmuxSession, "Enter"], {
+        encoding: "utf8"
+      });
+      wait(500);
+      continue;
+    }
+    if (pane.includes("You are in ") || pane.includes("codex")) {
+      return;
+    }
+    wait(250);
+  }
+}
+
+function capturePane(tmuxSession: string, lines: number): string | undefined {
+  const captured = spawnSync("tmux", ["capture-pane", "-t", tmuxSession, "-p", "-S", `-${lines}`], {
+    encoding: "utf8"
+  });
+  if (captured.status !== 0) {
+    return undefined;
+  }
+  return captured.stdout;
 }
 
 function shellJoin(parts: string[]): string {
