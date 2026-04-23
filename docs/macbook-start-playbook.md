@@ -21,17 +21,25 @@ duo status
 duo runtimes --check-auth
 ```
 
-Then start one parent:
+Then start one parent through duo:
 
 ```sh
-codex
+duo start --parent codex "这里写任务目标"
 ```
 
 or:
 
 ```sh
-/Users/USER/.local/bin/claude
+duo start --parent claude "这里写任务目标"
 ```
+
+Optional fast side-by-side start when Alice explicitly wants both visible from one command:
+
+```sh
+duo pair "这里写任务目标"
+```
+
+This is a convenience startup path, not the default recommendation. Treat it as fan-out, not delegation. The default remains: start one parent and let that parent decide whether to spawn the other side through `duo`.
 
 ## When Alice Should Start
 
@@ -41,7 +49,7 @@ Alice should manually start the parent agent only at these moments:
 2. After Alice has changed direction and wants a fresh attempt under the new constraints.
 3. After a `duo brake`, once Alice has decided the next direction.
 
-Alice does not need to manually start both sides or relay messages between them during normal operation.
+Alice does not need to manually start both sides or relay messages between them during normal operation. Alice chooses the parent once at launch; the parent chooses whether a child is needed later.
 
 ## Default Codex Parent Prompt
 

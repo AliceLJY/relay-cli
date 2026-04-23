@@ -6,6 +6,7 @@ The installed command is intentionally short:
 
 ```sh
 duo status
+duo start --parent codex "implement the next relay-cli improvement"
 duo brake "direction is drifting"
 duo resume "new direction: keep this as process orchestration, not a room"
 duo mcp
@@ -26,6 +27,8 @@ This is not `agent-room-cli`.
 - Uses tmux as the first PTY backend.
 - Stores project-local state in `.duo/state.json`.
 - Gives Alice explicit control commands: `status`, `brake`, `resume`, and `abort`.
+- Adds a parent-child startup path through `duo start --parent`.
+- Adds one-shot paired startup through `duo pair`.
 - Adds a human observer view through `duo watch`.
 
 ## MCP tools
@@ -59,6 +62,27 @@ npm run check
 npm link
 duo status
 ```
+
+## Recommended Start
+
+For real delegation, start one chosen parent and let that parent decide whether to spawn the other runtime:
+
+```sh
+duo start --parent codex "implement the next small relay-cli improvement"
+duo start --parent claude "critique the current relay-cli handoff design"
+```
+
+That creates one root process, attaches you to its tmux session, and keeps the second runtime out of the picture until the parent explicitly asks for help through duo MCP.
+
+## Quick Pair Start
+
+When Alice explicitly wants side-by-side fan-out instead of parent-child delegation, use:
+
+```sh
+duo pair "implement the next small relay-cli improvement"
+```
+
+That spawns one `codex` process and one `claude` process from the same task text, then drops into `duo watch` by default. This is parallel fan-out, not a parent-child flow. Use `duo pair --no-watch ...` if you only want the startup step.
 
 ## MacBook Install
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { Command } from "commander";
+import { spawnSync } from "node:child_process";
+import { Command, Option } from "commander";
 import { startMcpServer } from "./mcp-server.js";
 import { clearTerminal, readWatchSnapshot, renderWatchFrameWithLayout } from "./watch.js";
 import {
@@ -14,6 +15,7 @@ import {
 import {
   applyRuntimeLimits,
   closeAllProcesses,
+  closeProcess,
   getOutput,
   listRuntimes,
   sendInput,
@@ -92,6 +94,30 @@ program
   });
 
 program
+  .command("start")
+  .description("Start one chosen parent runtime and attach to its tmux session.")
+  .addOption(new Option("--parent <runtime>", "codex or claude").choices(["codex", "claude"]).makeOptionMandatory())
+  .argument("[prompt...]", "initial parent task")
+  .option("--name <name>", "process display name")
+  .option("--no-attach", "return after spawning instead of attaching to the parent session")
+  .action((promptParts: string[], options: { parent: RuntimeName; name?: string; attach?: boolean }) => {
+    const root = projectRoot();
+    const parent = spawnManagedProcess(
+      root,
+      options.parent,
+      promptParts.join(" ").trim() || undefined,
+      options.name || `parent-${options.parent}`
+    );
+
+    if (options.attach === false) {
+      console.log(JSON.stringify(parent, null, 2));
+      return;
+    }
+
+    attachToProcess(parent);
+  });
+
+program
   .command("spawn")
   .description("Manually spawn a Codex or Claude process.")
   .argument("<runtime>", "codex or claude")
@@ -99,19 +125,56 @@ program
   .option("--name <name>", "process display name")
   .action((runtime: RuntimeName, promptParts: string[], options: { name?: string }) => {
     const root = projectRoot();
-    const result = withLockedState(root, (current) => {
-      const state = applyRuntimeLimits(current);
-      const spawned = spawnAgent(state, {
-        runtime,
-        name: options.name,
-        prompt: promptParts.join(" ").trim() || undefined,
-        cwd: root
-      });
-      return { state: spawned.state, result: spawned.process };
-    });
-    stabilizeProcess(result, 1000);
+    const result = spawnManagedProcess(root, runtime, promptParts.join(" ").trim() || undefined, options.name);
     console.log(JSON.stringify(result, null, 2));
   });
+
+program
+  .command("pair")
+  .description("Spawn a Codex/Claude pair from one shared instruction.")
+  .argument("[prompt...]", "shared task to send to both runtimes")
+  .option("--no-watch", "return after spawning instead of entering duo watch")
+  .option("-n, --lines <lines>", "lines per process pane", "30")
+  .option("-i, --interval <ms>", "refresh interval in milliseconds", "1500")
+  .option("--recent-seconds <seconds>", "also show recently finished processes for this many seconds", "120")
+  .option("--layout <layout>", "stack or columns", "columns")
+  .action(
+    async (promptParts: string[], options: {
+      watch?: boolean;
+      lines: string;
+      interval: string;
+      recentSeconds: string;
+      layout: "stack" | "columns";
+    }) => {
+      const root = projectRoot();
+      const prompt = promptParts.join(" ").trim() || undefined;
+      const started: Array<{ id: string }> = [];
+
+      try {
+        const codex = spawnManagedProcess(root, "codex", prompt, "pair-codex");
+        started.push({ id: codex.id });
+        const claude = spawnManagedProcess(root, "claude", prompt, "pair-claude");
+        started.push({ id: claude.id });
+
+        if (options.watch !== false) {
+          await runWatchLoop(root, {
+            lines: options.lines,
+            interval: options.interval,
+            recentSeconds: options.recentSeconds,
+            layout: options.layout
+          });
+          return;
+        }
+
+        console.log(JSON.stringify({ codex, claude }, null, 2));
+      } catch (error) {
+        if (started.length > 0) {
+          cleanupSpawnedProcesses(root, started.map((processRecord) => processRecord.id));
+        }
+        throw error;
+      }
+    }
+  );
 
 program
   .command("send")
@@ -159,31 +222,7 @@ program
       all?: boolean;
       once?: boolean;
     }) => {
-    const root = projectRoot();
-    const lines = Number(options.lines);
-    const interval = Number(options.interval);
-    const recentWindowMs = Number(options.recentSeconds) * 1000;
-
-    do {
-      const snapshot = readWatchSnapshot(root, {
-        lines,
-        includeAll: options.all,
-        recentWindowMs
-      });
-      if (process.stdout.isTTY) {
-        clearTerminal();
-      }
-      process.stdout.write(
-        renderWatchFrameWithLayout(snapshot, {
-          layout: options.layout,
-          terminalWidth: process.stdout.columns || 160
-        })
-      );
-      if (options.once) {
-        return;
-      }
-      await sleep(interval);
-    } while (true);
+      await runWatchLoop(projectRoot(), options);
     }
   );
 
@@ -215,6 +254,87 @@ function printStatus(state: ReturnType<typeof readState>): void {
   for (const event of latestEvents(state, 5)) {
     console.log(`- ${event.createdAt} ${event.type}: ${event.message}`);
   }
+}
+
+function spawnManagedProcess(
+  root: string,
+  runtime: RuntimeName,
+  prompt?: string,
+  name?: string
+) {
+  const result = withLockedState(root, (current) => {
+    const state = applyRuntimeLimits(current);
+    const spawned = spawnAgent(state, {
+      runtime,
+      name,
+      prompt,
+      cwd: root
+    });
+    return { state: spawned.state, result: spawned.process };
+  });
+  stabilizeProcess(result, 1000);
+  return result;
+}
+
+function cleanupSpawnedProcesses(root: string, processIds: string[]): void {
+  try {
+    withLockedState(root, (state) => {
+      let next = state;
+      for (const processId of processIds) {
+        next = closeProcess(next, processId);
+      }
+      return { state: next, result: undefined };
+    });
+  } catch {
+    // Best-effort cleanup only; preserve the original spawn error.
+  }
+}
+
+function attachToProcess(processRecord: ReturnType<typeof spawnManagedProcess>): void {
+  const attached = spawnSync("tmux", ["attach-session", "-t", processRecord.tmuxSession], {
+    stdio: "inherit",
+    encoding: "utf8"
+  });
+  if (attached.status !== 0) {
+    throw new Error(`tmux attach failed: ${attached.stderr || attached.stdout}`);
+  }
+}
+
+async function runWatchLoop(
+  root: string,
+  options: {
+    lines: string;
+    interval: string;
+    recentSeconds: string;
+    layout: "stack" | "columns";
+    all?: boolean;
+    once?: boolean;
+  }
+): Promise<void> {
+  const lines = Number(options.lines);
+  const interval = Number(options.interval);
+  const recentWindowMs = Number(options.recentSeconds) * 1000;
+
+  do {
+    const snapshot = readWatchSnapshot(root, {
+      lines,
+      includeAll: options.all,
+      recentWindowMs
+    });
+    if (process.stdout.isTTY) {
+      clearTerminal();
+    }
+    process.stdout.write(
+      renderWatchFrameWithLayout(snapshot, {
+        layout: options.layout,
+        terminalWidth: process.stdout.columns || 160
+      })
+    );
+    if (options.once) {
+      return;
+    }
+    await sleep(interval);
+  } while (true);
 }
 
 function sleep(ms: number): Promise<void> {

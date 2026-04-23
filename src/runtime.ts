@@ -11,6 +11,7 @@ const RUNTIME_COMMANDS: Record<RuntimeName, { env: string; command: string }> = 
   codex: { env: "DUO_CODEX_CMD", command: "codex" },
   claude: { env: "DUO_CLAUDE_CMD", command: "claude" }
 };
+const INPUT_EVENT_PREVIEW_LIMIT = 120;
 
 export interface SpawnAgentInput {
   runtime: RuntimeName;
@@ -125,7 +126,7 @@ export function sendInput(state: DuoState, processId: string, input: string): Du
       }
     },
     "send_input",
-    "sent input",
+    `sent input: ${previewInputForEvent(input)}`,
     processId
   );
 }
@@ -332,6 +333,20 @@ export function parseClaudeAuthStatus(output: string): { loggedIn: boolean } | u
     return undefined;
   }
   return undefined;
+}
+
+export function previewInputForEvent(input: string, maxLength = INPUT_EVENT_PREVIEW_LIMIT): string {
+  const collapsed = input.replace(/\s+/g, " ").trim();
+  if (collapsed.length === 0) {
+    return "[empty input]";
+  }
+  if (collapsed.length <= maxLength) {
+    return collapsed;
+  }
+  if (maxLength <= 3) {
+    return ".".repeat(Math.max(0, maxLength));
+  }
+  return `${collapsed.slice(0, maxLength - 3)}...`;
 }
 
 function defaultFallbackDirs(): string[] {

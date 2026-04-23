@@ -18,13 +18,14 @@ export function readWatchSnapshot(
   const state = readState(projectRoot);
   const recentWindowMs = options.recentWindowMs ?? 2 * 60 * 1000;
   const now = Date.now();
-  const selected = Object.values(state.processes)
+  const selected = orderProcessesForWatch(
+    Object.values(state.processes)
     .filter((processRecord) => shouldShowInWatch(processRecord, {
       includeAll: options.includeAll,
       recentWindowMs,
       now
     }))
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  )
     .map((processRecord) => ({
       process: processRecord,
       output: peekProcessOutput(processRecord, options.lines)
@@ -48,6 +49,7 @@ export function renderWatchFrameWithLayout(
   snapshot: WatchSnapshot,
   options: { layout: "stack" | "columns"; terminalWidth: number }
 ): string {
+  const visibleProcessIds = new Set(snapshot.processes.map(({ process }) => process.id));
   const header = [
     "duo watch",
     `captured: ${snapshot.capturedAt}`,
@@ -59,7 +61,7 @@ export function renderWatchFrameWithLayout(
     return `${header}\n\nNo visible duo processes.\n`;
   }
 
-  if (options.layout === "columns" && snapshot.processes.length >= 2) {
+  if (options.layout === "columns" && snapshot.processes.length >= 2 && !hasVisibleHierarchy(snapshot.processes, visibleProcessIds)) {
     return renderColumnsFrame(snapshot, header, options.terminalWidth);
   }
 
@@ -67,7 +69,7 @@ export function renderWatchFrameWithLayout(
     const body = output.trim() || "[no captured output yet]";
     return [
       "=".repeat(80),
-      `${process.name} | ${process.id} | ${process.runtime} | ${process.status} | depth=${process.depth}`,
+      describeProcessForWatch(process, visibleProcessIds),
       "-".repeat(80),
       body
     ].join("\n");
@@ -108,9 +110,10 @@ function renderColumnsFrame(snapshot: WatchSnapshot, header: string, terminalWid
   const selected = snapshot.processes.slice(0, 2);
   const gap = "  ";
   const columnWidth = Math.max(40, Math.floor((terminalWidth - gap.length) / 2));
+  const visibleProcessIds = new Set(snapshot.processes.map(({ process }) => process.id));
 
   const columns = selected.map(({ process, output }) => {
-    const title = `${process.name} | ${process.runtime} | ${process.status}`;
+    const title = describeProcessForWatch(process, visibleProcessIds);
     const body = (output.trim() || "[no captured output yet]").split("\n");
     return fitBlock([title, "-".repeat(Math.max(10, columnWidth - 2)), ...body], columnWidth);
   });
@@ -149,4 +152,76 @@ function fitBlock(lines: string[], width: number): string[] {
     }
   }
   return output;
+}
+
+function orderProcessesForWatch(processes: DuoProcess[]): DuoProcess[] {
+  const processMap = new Map(processes.map((processRecord) => [processRecord.id, processRecord]));
+  const children = new Map<string, DuoProcess[]>();
+
+  for (const processRecord of processes) {
+    if (!processRecord.parentId || !processMap.has(processRecord.parentId)) {
+      continue;
+    }
+    const bucket = children.get(processRecord.parentId) || [];
+    bucket.push(processRecord);
+    children.set(processRecord.parentId, bucket);
+  }
+
+  const ordered: DuoProcess[] = [];
+  const visited = new Set<string>();
+  const roots = processes
+    .filter((processRecord) => !processRecord.parentId || !processMap.has(processRecord.parentId))
+    .sort(byCreatedAt);
+
+  for (const root of roots) {
+    appendProcessTree(root, children, visited, ordered);
+  }
+
+  for (const processRecord of processes.sort(byCreatedAt)) {
+    if (!visited.has(processRecord.id)) {
+      appendProcessTree(processRecord, children, visited, ordered);
+    }
+  }
+
+  return ordered;
+}
+
+function appendProcessTree(
+  processRecord: DuoProcess,
+  children: Map<string, DuoProcess[]>,
+  visited: Set<string>,
+  ordered: DuoProcess[]
+): void {
+  if (visited.has(processRecord.id)) {
+    return;
+  }
+  visited.add(processRecord.id);
+  ordered.push(processRecord);
+  for (const child of (children.get(processRecord.id) || []).sort(byCreatedAt)) {
+    appendProcessTree(child, children, visited, ordered);
+  }
+}
+
+function hasVisibleHierarchy(processes: WatchSnapshot["processes"], visibleProcessIds: Set<string>): boolean {
+  return processes.some(({ process }) => Boolean(process.parentId && visibleProcessIds.has(process.parentId)));
+}
+
+function describeProcessForWatch(processRecord: DuoProcess, visibleProcessIds: Set<string>): string {
+  const indent = "  ".repeat(Math.max(0, processRecord.depth - 1));
+  const relation = describeProcessRelation(processRecord, visibleProcessIds);
+  return `${indent}${relation} ${processRecord.name} | ${processRecord.id} | ${processRecord.runtime} | ${processRecord.status} | depth=${processRecord.depth}`;
+}
+
+function describeProcessRelation(processRecord: DuoProcess, visibleProcessIds: Set<string>): string {
+  if (!processRecord.parentId) {
+    return "root>";
+  }
+  if (!visibleProcessIds.has(processRecord.parentId)) {
+    return `orphan(${processRecord.parentId})>`;
+  }
+  return `child(${processRecord.parentId})>`;
+}
+
+function byCreatedAt(left: DuoProcess, right: DuoProcess): number {
+  return left.createdAt.localeCompare(right.createdAt);
 }
