@@ -68,7 +68,7 @@ Use the helper script from the mini:
 npm run install:macbook
 ```
 
-It syncs the source to `mac:~/Projects/relay-cli`, installs dependencies with `npm ci`, runs checks, and links `duo` on the MacBook.
+It syncs the source to `mac:~/Projects/relay-cli`, installs dependencies with `npm ci`, runs checks, links `duo`, registers the `duo` MCP server for Codex, and ensures the Claude project-level `.mcp.json` exists.
 
 Current MacBook runtime requirement: `codex` is available, but `claude` must also be installed on the MacBook for full Codex/Claude orchestration.
 
@@ -77,3 +77,5 @@ To expose the control plane to an agent, configure that agent with an MCP server
 ```sh
 duo mcp
 ```
+
+The repo also carries a project-level [`.mcp.json`](/Users/USER/Projects/relay-cli/.mcp.json) so Claude Code can discover the `duo` MCP server inside this project on the MacBook.

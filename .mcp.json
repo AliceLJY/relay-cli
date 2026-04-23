@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "duo": {
+      "type": "stdio",
+      "command": "/opt/homebrew/bin/duo",
+      "args": [
+        "mcp"
+      ],
+      "env": {}
+    }
+  }
+}
