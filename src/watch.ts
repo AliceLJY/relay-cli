@@ -13,11 +13,17 @@ export interface WatchSnapshot {
 
 export function readWatchSnapshot(
   projectRoot: string,
-  options: { lines: number; includeAll?: boolean }
+  options: { lines: number; includeAll?: boolean; recentWindowMs?: number }
 ): WatchSnapshot {
   const state = readState(projectRoot);
+  const recentWindowMs = options.recentWindowMs ?? 2 * 60 * 1000;
+  const now = Date.now();
   const selected = Object.values(state.processes)
-    .filter((processRecord) => options.includeAll || processRecord.status === "running" || processRecord.status === "blocked")
+    .filter((processRecord) => shouldShowInWatch(processRecord, {
+      includeAll: options.includeAll,
+      recentWindowMs,
+      now
+    }))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .map((processRecord) => ({
       process: processRecord,
@@ -58,6 +64,20 @@ export function renderWatchFrame(snapshot: WatchSnapshot): string {
 
 export function clearTerminal(): void {
   process.stdout.write("\u001Bc");
+}
+
+export function shouldShowInWatch(
+  processRecord: DuoProcess,
+  options: { includeAll?: boolean; recentWindowMs: number; now: number }
+): boolean {
+  if (options.includeAll) {
+    return true;
+  }
+  if (processRecord.status === "running" || processRecord.status === "blocked") {
+    return true;
+  }
+  const updatedAt = Date.parse(processRecord.updatedAt);
+  return Number.isFinite(updatedAt) && options.now - updatedAt <= options.recentWindowMs;
 }
 
 function peekProcessOutput(processRecord: DuoProcess, lines: number): string {
