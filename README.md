@@ -18,7 +18,7 @@ duo watch
 This is not `agent-room-cli`.
 
 - `agent-room-cli`: human-led shared room, mention routing, transcript-first collaboration.
-- `relay-cli`: agent-led local process orchestration, with Alice retaining an immediate brake.
+- `relay-cli`: agent-led local process orchestration, with the human driver retaining an immediate brake.
 
 ## Current MVP
 
@@ -26,10 +26,11 @@ This is not `agent-room-cli`.
 - Exposes Codex/Claude process orchestration tools to agents.
 - Uses tmux as the first PTY backend.
 - Stores project-local state in `.duo/state.json`.
-- Gives Alice explicit control commands: `status`, `brake`, `resume`, and `abort`.
+- Gives the operator explicit control commands: `status`, `brake`, `resume`, and `abort`.
 - Adds a parent-child startup path through `duo start --parent`.
 - Adds one-shot paired startup through `duo pair`.
 - Adds a human observer view through `duo watch`.
+- Injects `DUO_PROCESS_ID` / `DUO_RUNTIME` / `DUO_DEPTH` as real environment variables so the parent-child chain is anchored in process state, not just prompt text.
 
 ## MCP tools
 
@@ -49,7 +50,7 @@ The default is autonomous Codex/Claude collaboration, not autonomous irreversibl
 
 - `duo brake` freezes new spawn/send actions without killing current panes.
 - `duo resume` clears the brake and can answer a pending `need_human` request.
-- `need_human` is blocking: the calling agent waits for Alice to resume with direction.
+- `need_human` is blocking: the calling agent waits for the human operator to resume with direction.
 - Spawn depth is capped at 2.
 - A process that has not produced observed output for 5 minutes causes a brake on the next status or tool check.
 - Three recorded tool failures trigger a brake.
@@ -76,7 +77,7 @@ That creates one root process, attaches you to its tmux session, and keeps the s
 
 ## Quick Pair Start
 
-When Alice explicitly wants side-by-side fan-out instead of parent-child delegation, use:
+When the operator explicitly wants side-by-side fan-out instead of parent-child delegation, use:
 
 ```sh
 duo pair "implement the next small relay-cli improvement"
@@ -84,11 +85,9 @@ duo pair "implement the next small relay-cli improvement"
 
 That spawns one `codex` process and one `claude` process from the same task text, then drops into `duo watch` by default. This is parallel fan-out, not a parent-child flow. Use `duo pair --no-watch ...` if you only want the startup step.
 
-## MacBook Install
+## Two-Machine Setup
 
-This repo is created on the Mac mini, but Alice usually works from the MacBook.
-
-Use the helper script from the mini:
+This repo was authored on a Mac mini but designed to run on a MacBook. A helper script keeps the two in sync from the mini side:
 
 ```sh
 npm run install:macbook
@@ -96,7 +95,7 @@ npm run install:macbook
 
 It syncs the source to `mac:~/Projects/relay-cli`, installs dependencies with `npm ci`, runs checks, links `duo`, registers the `duo` MCP server for Codex, and ensures the Claude project-level `.mcp.json` exists.
 
-Current MacBook runtime requirement: `codex` is available, but `claude` must also be installed on the MacBook for full Codex/Claude orchestration.
+Runtime requirements on the machine that actually runs `duo`: both `codex` and `claude` CLI must be installed and authenticated.
 
 To expose the control plane to an agent, configure that agent with an MCP server command equivalent to:
 
@@ -104,6 +103,14 @@ To expose the control plane to an agent, configure that agent with an MCP server
 duo mcp
 ```
 
-The repo also carries a project-level [`.mcp.json`](/Users/USER/Projects/relay-cli/.mcp.json) so Claude Code can discover the `duo` MCP server inside this project on the MacBook.
+The repo also carries a project-level [`.mcp.json`](./.mcp.json) so Claude Code can discover the `duo` MCP server inside this project.
 
-For the actual MacBook operator workflow, see [docs/macbook-start-playbook.md](/Users/USER/Projects/relay-cli/docs/macbook-start-playbook.md).
+For the full operator workflow, see [docs/macbook-start-playbook.md](./docs/macbook-start-playbook.md).
+
+## Chinese Version
+
+See [README_CN.md](./README_CN.md).
+
+## Status
+
+This is a personal experiment-grade tool. It works, it is under active shaping, and the surface may shift without deprecation notices. Use it as a reference or a starting point rather than a stable dependency.
