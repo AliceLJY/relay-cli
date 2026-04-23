@@ -9,6 +9,7 @@ duo status
 duo brake "direction is drifting"
 duo resume "new direction: keep this as process orchestration, not a room"
 duo mcp
+duo watch
 ```
 
 ## Boundary
@@ -25,6 +26,7 @@ This is not `agent-room-cli`.
 - Uses tmux as the first PTY backend.
 - Stores project-local state in `.duo/state.json`.
 - Gives Alice explicit control commands: `status`, `brake`, `resume`, and `abort`.
+- Adds a human observer view through `duo watch`.
 
 ## MCP tools
 

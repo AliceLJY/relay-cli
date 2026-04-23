@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { startMcpServer } from "./mcp-server.js";
+import { clearTerminal, readWatchSnapshot, renderWatchFrame } from "./watch.js";
 import {
   answerLatestHumanRequest,
   latestEvents,
@@ -140,6 +141,34 @@ program
     process.stdout.write(result);
   });
 
+program
+  .command("watch")
+  .description("Watch multiple duo-controlled agent outputs in one terminal.")
+  .option("-n, --lines <lines>", "lines per process pane", "30")
+  .option("-i, --interval <ms>", "refresh interval in milliseconds", "1500")
+  .option("--all", "include inactive processes")
+  .option("--once", "render one snapshot and exit")
+  .action(async (options: { lines: string; interval: string; all?: boolean; once?: boolean }) => {
+    const root = projectRoot();
+    const lines = Number(options.lines);
+    const interval = Number(options.interval);
+
+    do {
+      const snapshot = readWatchSnapshot(root, {
+        lines,
+        includeAll: options.all
+      });
+      if (process.stdout.isTTY) {
+        clearTerminal();
+      }
+      process.stdout.write(renderWatchFrame(snapshot));
+      if (options.once) {
+        return;
+      }
+      await sleep(interval);
+    } while (true);
+  });
+
 program.parseAsync(process.argv).catch((error: unknown) => {
   console.error((error as Error).message);
   process.exitCode = 1;
@@ -168,4 +197,8 @@ function printStatus(state: ReturnType<typeof readState>): void {
   for (const event of latestEvents(state, 5)) {
     console.log(`- ${event.createdAt} ${event.type}: ${event.message}`);
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
