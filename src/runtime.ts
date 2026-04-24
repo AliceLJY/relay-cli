@@ -4,7 +4,14 @@ import { accessSync, constants } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DuoProcess, DuoState, RuntimeHealth, RuntimeInfo, RuntimeName } from "./types.js";
-import { appendEvent, assertNotBraked, recordFailure, setBrake } from "./state.js";
+import {
+  appendEvent,
+  assertNotBraked,
+  maybeDowngradeBrake,
+  recordFailure,
+  resolveIdleTimeoutMs,
+  setBrake
+} from "./state.js";
 import { nowIso, shortId } from "./ids.js";
 
 const RUNTIME_COMMANDS: Record<RuntimeName, { env: string; command: string }> = {
@@ -210,18 +217,43 @@ export function closeAllProcesses(state: DuoState, status: DuoProcess["status"] 
 }
 
 export function applyRuntimeLimits(state: DuoState): DuoState {
+  let next = maybeDowngradeBrake(state);
   const now = Date.now();
-  for (const processRecord of Object.values(state.processes)) {
+  const idleTimeoutMs = resolveIdleTimeoutMs(next);
+  const hasPendingHumanRequest = Object.values(next.humanRequests).some(
+    (request) => request.status === "pending"
+  );
+  const activeChildrenByParent = new Map<string, number>();
+  for (const processRecord of Object.values(next.processes)) {
+    if (!processRecord.parentId) {
+      continue;
+    }
+    if (processRecord.status !== "running" && processRecord.status !== "blocked") {
+      continue;
+    }
+    activeChildrenByParent.set(
+      processRecord.parentId,
+      (activeChildrenByParent.get(processRecord.parentId) || 0) + 1
+    );
+  }
+  for (const processRecord of Object.values(next.processes)) {
     if (processRecord.status !== "running") {
       continue;
     }
     const observedAt = Date.parse(processRecord.lastOutputAt || processRecord.createdAt);
-    if (now - observedAt > state.limits.spawnTimeoutMs) {
-      const blocked = markProcess(state, processRecord.id, "blocked");
-      return setBrake(blocked, `process timeout: ${processRecord.name}`, "system");
+    if (now - observedAt <= idleTimeoutMs) {
+      continue;
     }
+    if ((activeChildrenByParent.get(processRecord.id) || 0) > 0) {
+      continue;
+    }
+    if (hasPendingHumanRequest) {
+      continue;
+    }
+    const blocked = markProcess(next, processRecord.id, "blocked");
+    return setBrake(blocked, `process timeout: ${processRecord.name}`, "system");
   }
-  return state;
+  return next;
 }
 
 export function safeToolCall<T>(state: DuoState, fn: () => T): { state: DuoState; result?: T; error?: Error } {

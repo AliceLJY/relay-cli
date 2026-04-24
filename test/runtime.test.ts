@@ -4,7 +4,14 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultState } from "../src/state.js";
-import { parseClaudeAuthStatus, previewInputForEvent, resolveCommand, sendInput, spawnAgent } from "../src/runtime.js";
+import {
+  applyRuntimeLimits,
+  parseClaudeAuthStatus,
+  previewInputForEvent,
+  resolveCommand,
+  sendInput,
+  spawnAgent
+} from "../src/runtime.js";
 
 test("resolveCommand finds executable fallback paths outside PATH", () => {
   const root = mkdtempSync(join(tmpdir(), "duo-runtime-"));
@@ -103,4 +110,67 @@ test("spawnAgent injects duo environment into tmux new-session", () => {
       process.env.DUO_CLAUDE_CMD = previousClaudeCmd;
     }
   }
+});
+
+function makeIdleProcess(id: string, overrides: Partial<import("../src/types.js").DuoProcess> = {}) {
+  const staleAt = new Date(Date.now() - 45 * 60 * 1000).toISOString();
+  return {
+    id,
+    runtime: "claude" as const,
+    name: id,
+    status: "running" as const,
+    depth: 1,
+    tmuxSession: `tmux_${id}`,
+    cwd: "/tmp",
+    createdAt: staleAt,
+    updatedAt: staleAt,
+    lastOutputAt: staleAt,
+    failureCount: 0,
+    ...overrides
+  };
+}
+
+test("applyRuntimeLimits does not brake a parent while its child is still active", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-idle-parent-"));
+  const state = defaultState(root);
+  state.processes["proc_parent"] = makeIdleProcess("proc_parent");
+  state.processes["proc_child"] = makeIdleProcess("proc_child", {
+    parentId: "proc_parent",
+    depth: 2,
+    status: "running",
+    lastOutputAt: new Date().toISOString()
+  });
+
+  const result = applyRuntimeLimits(state);
+  assert.equal(result.brake?.active, undefined);
+  assert.equal(result.processes["proc_parent"].status, "running");
+});
+
+test("applyRuntimeLimits does not brake while a human request is pending", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-idle-human-"));
+  const state = defaultState(root);
+  state.processes["proc_waiter"] = makeIdleProcess("proc_waiter");
+  state.humanRequests["h1"] = {
+    id: "h1",
+    reason: "need direction",
+    question: "which way?",
+    urgency: "normal",
+    options: [],
+    status: "pending",
+    createdAt: new Date().toISOString()
+  };
+
+  const result = applyRuntimeLimits(state);
+  assert.equal(result.brake?.active, undefined);
+});
+
+test("applyRuntimeLimits brakes an idle process when no child and no pending human", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-idle-lone-"));
+  const state = defaultState(root);
+  state.processes["proc_alone"] = makeIdleProcess("proc_alone");
+
+  const result = applyRuntimeLimits(state);
+  assert.equal(result.brake?.active, true);
+  assert.match(result.brake?.reason || "", /process timeout: proc_alone/);
+  assert.equal(result.processes["proc_alone"].status, "blocked");
 });

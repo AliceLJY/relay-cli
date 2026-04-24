@@ -6,8 +6,18 @@ import { nowIso, shortId } from "./ids.js";
 export const DEFAULT_LIMITS = {
   maxDepth: 2,
   maxFailures: 3,
-  spawnTimeoutMs: 5 * 60 * 1000
+  spawnTimeoutMs: 5 * 60 * 1000,
+  idleTimeoutMs: 30 * 60 * 1000,
+  brakeAutoDowngradeMs: 2 * 60 * 60 * 1000
 } as const;
+
+export function resolveIdleTimeoutMs(state: DuoState): number {
+  return state.limits.idleTimeoutMs ?? DEFAULT_LIMITS.idleTimeoutMs;
+}
+
+export function resolveBrakeAutoDowngradeMs(state: DuoState): number {
+  return state.limits.brakeAutoDowngradeMs ?? DEFAULT_LIMITS.brakeAutoDowngradeMs;
+}
 
 export function projectRootFrom(cwd = process.cwd()): string {
   return resolve(cwd);
@@ -196,9 +206,40 @@ export function recordFailure(state: DuoState, message: string, processId?: stri
 }
 
 export function assertNotBraked(state: DuoState): void {
-  if (state.brake?.active) {
-    throw new Error(`duo is braked: ${state.brake.reason}`);
+  if (!state.brake?.active) {
+    return;
   }
+  if (state.brake.mode === "warn") {
+    process.stderr.write(
+      `[duo] warning: stale system brake still active: ${state.brake.reason} (downgraded ${state.brake.downgradedAt})\n`
+    );
+    return;
+  }
+  throw new Error(`duo is braked: ${state.brake.reason}`);
+}
+
+export function maybeDowngradeBrake(state: DuoState): DuoState {
+  const brake = state.brake;
+  if (!brake?.active || brake.mode === "warn" || brake.createdBy !== "system") {
+    return state;
+  }
+  const age = Date.now() - Date.parse(brake.createdAt);
+  if (age < resolveBrakeAutoDowngradeMs(state)) {
+    return state;
+  }
+  const downgraded = appendEvent(
+    {
+      ...state,
+      brake: {
+        ...brake,
+        mode: "warn",
+        downgradedAt: nowIso()
+      }
+    },
+    "brake_downgrade",
+    `system brake auto-downgraded to warn-only after ${Math.round(age / 60000)}min without human resume: ${brake.reason}`
+  );
+  return downgraded;
 }
 
 export function latestEvents(state: DuoState, count: number): DuoEvent[] {

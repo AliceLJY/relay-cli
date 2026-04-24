@@ -164,6 +164,70 @@ test("duo spawn falls back to orphan and warns when DUO_PROCESS_ID points to unk
   assert.match(result.stderr, /DUO_PROCESS_ID=proc_ghost_deadbeef is set but not found in state/);
 });
 
+test("duo cancel sends Ctrl-C to the pane and marks the process cancelled", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-cli-cancel-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  const tmuxLog = join(root, "tmux.log");
+  writeExecutable(
+    join(binDir, "tmux"),
+    `#!/usr/bin/env sh\nprintf '%s\\n' "$*" >> "${tmuxLog}"\nexit 0\n`
+  );
+  writeExecutable(join(binDir, "codex"), "#!/usr/bin/env sh\nexit 0\n");
+  const pathEnv = `${binDir}:${process.env.PATH || ""}`;
+
+  const spawnOut = execFileSync(
+    process.execPath,
+    [CLI_PATH, "-C", root, "spawn", "codex", "--name", "cancel-target"],
+    { cwd: root, env: { ...process.env, PATH: pathEnv, DUO_PROCESS_ID: "" }, encoding: "utf8" }
+  );
+  const target = JSON.parse(spawnOut) as { id: string };
+
+  execFileSync(
+    process.execPath,
+    [CLI_PATH, "-C", root, "cancel", target.id],
+    { cwd: root, env: { ...process.env, PATH: pathEnv }, encoding: "utf8" }
+  );
+
+  const state = JSON.parse(readFileSync(join(root, ".duo", "state.json"), "utf8")) as {
+    processes: Record<string, { status: string }>;
+  };
+  assert.equal(state.processes[target.id].status, "cancelled");
+  assert.match(readFileSync(tmuxLog, "utf8"), /send-keys .* C-c/);
+});
+
+test("duo close kills the tmux session and marks the process closed", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-cli-close-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  const tmuxLog = join(root, "tmux.log");
+  writeExecutable(
+    join(binDir, "tmux"),
+    `#!/usr/bin/env sh\nprintf '%s\\n' "$*" >> "${tmuxLog}"\nexit 0\n`
+  );
+  writeExecutable(join(binDir, "codex"), "#!/usr/bin/env sh\nexit 0\n");
+  const pathEnv = `${binDir}:${process.env.PATH || ""}`;
+
+  const spawnOut = execFileSync(
+    process.execPath,
+    [CLI_PATH, "-C", root, "spawn", "codex", "--name", "close-target"],
+    { cwd: root, env: { ...process.env, PATH: pathEnv, DUO_PROCESS_ID: "" }, encoding: "utf8" }
+  );
+  const target = JSON.parse(spawnOut) as { id: string };
+
+  execFileSync(
+    process.execPath,
+    [CLI_PATH, "-C", root, "close", target.id],
+    { cwd: root, env: { ...process.env, PATH: pathEnv }, encoding: "utf8" }
+  );
+
+  const state = JSON.parse(readFileSync(join(root, ".duo", "state.json"), "utf8")) as {
+    processes: Record<string, { status: string }>;
+  };
+  assert.equal(state.processes[target.id].status, "closed");
+  assert.match(readFileSync(tmuxLog, "utf8"), /kill-session/);
+});
+
 test("duo start does not inherit parent from DUO_PROCESS_ID env", () => {
   const root = mkdtempSync(join(tmpdir(), "duo-cli-start-no-inherit-"));
   const binDir = join(root, "bin");

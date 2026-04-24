@@ -14,6 +14,7 @@ import {
 } from "./state.js";
 import {
   applyRuntimeLimits,
+  cancelAgent,
   closeAllProcesses,
   closeProcess,
   getOutput,
@@ -209,6 +210,32 @@ program
       return { state: next.state, result: next.output };
     });
     process.stdout.write(result);
+  });
+
+program
+  .command("cancel")
+  .description("Send Ctrl-C to a running process and mark it cancelled (pane stays).")
+  .argument("<processId>")
+  .action((processId: string) => {
+    const root = projectRoot();
+    withLockedState(root, (state) => ({
+      state: cancelAgent(state, processId),
+      result: undefined
+    }));
+    console.log(`cancelled: ${processId}`);
+  });
+
+program
+  .command("close")
+  .description("Kill the tmux session for a process and mark it closed.")
+  .argument("<processId>")
+  .action((processId: string) => {
+    const root = projectRoot();
+    withLockedState(root, (state) => ({
+      state: closeProcess(state, processId),
+      result: undefined
+    }));
+    console.log(`closed: ${processId}`);
   });
 
 program

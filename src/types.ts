@@ -14,13 +14,19 @@ export interface DuoLimits {
   maxDepth: number;
   maxFailures: number;
   spawnTimeoutMs: number;
+  idleTimeoutMs?: number;
+  brakeAutoDowngradeMs?: number;
 }
+
+export type BrakeMode = "blocking" | "warn";
 
 export interface BrakeState {
   active: boolean;
   reason: string;
   createdAt: string;
   createdBy: "human" | "agent" | "system";
+  mode?: BrakeMode;
+  downgradedAt?: string;
 }
 
 export interface DuoProcess {

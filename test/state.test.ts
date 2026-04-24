@@ -8,6 +8,7 @@ import {
   answerLatestHumanRequest,
   assertNotBraked,
   defaultState,
+  maybeDowngradeBrake,
   readState,
   recordFailure,
   setBrake,
@@ -58,4 +59,42 @@ test("three failures activate the system brake", () => {
   state = recordFailure(state, "three");
   assert.equal(state.brake?.active, true);
   assert.match(state.brake?.reason || "", /failure limit/);
+});
+
+test("maybeDowngradeBrake downgrades stale system brake to warn-only", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-brake-downgrade-"));
+  const base = defaultState(root);
+  const braked = setBrake(base, "process timeout: ghost", "system");
+  // Back-date the brake createdAt by 3h so the 2h auto-downgrade threshold is exceeded.
+  const staleAt = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+  const staleBraked = { ...braked, brake: { ...braked.brake!, createdAt: staleAt } };
+  const downgraded = maybeDowngradeBrake(staleBraked);
+  assert.equal(downgraded.brake?.mode, "warn");
+  assert.ok(downgraded.brake?.downgradedAt);
+  assert.ok(
+    downgraded.events.some(
+      (event) => event.type === "brake_downgrade" && event.message.includes("warn-only")
+    )
+  );
+});
+
+test("maybeDowngradeBrake leaves human brake untouched even when stale", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-brake-human-"));
+  const base = defaultState(root);
+  const braked = setBrake(base, "drift", "human");
+  const staleAt = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const staleBraked = { ...braked, brake: { ...braked.brake!, createdAt: staleAt } };
+  const result = maybeDowngradeBrake(staleBraked);
+  assert.equal(result.brake?.mode, undefined);
+});
+
+test("assertNotBraked respects warn mode without throwing", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-brake-warn-"));
+  const base = defaultState(root);
+  const braked = setBrake(base, "stale", "system");
+  const warnState = {
+    ...braked,
+    brake: { ...braked.brake!, mode: "warn" as const, downgradedAt: new Date().toISOString() }
+  };
+  assert.doesNotThrow(() => assertNotBraked(warnState));
 });
