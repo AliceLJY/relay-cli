@@ -18,6 +18,7 @@ import {
   closeProcess,
   getOutput,
   listRuntimes,
+  resolveParentId,
   sendInput,
   stabilizeProcess,
   spawnAgent
@@ -59,11 +60,15 @@ export async function startMcpServer(projectRoot = projectRootFrom()): Promise<v
     async (input) => {
       const result = withLockedState(projectRoot, (current) => {
         const state = applyRuntimeLimits(current);
+        const parentId = resolveParentId(state, {
+          explicit: input.parentId,
+          envFallback: true
+        });
         const spawned = spawnAgent(state, {
           runtime: input.runtime as RuntimeName,
           name: input.name,
           prompt: input.prompt,
-          parentId: input.parentId || process.env.DUO_PROCESS_ID,
+          parentId,
           cwd: projectRoot
         });
         return { state: spawned.state, result: spawned.process };

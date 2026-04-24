@@ -6,9 +6,12 @@ import { join } from "node:path";
 import { defaultState } from "../src/state.js";
 import {
   applyRuntimeLimits,
+  cancelAgent,
+  closeProcess,
   parseClaudeAuthStatus,
   previewInputForEvent,
   resolveCommand,
+  resolveParentId,
   sendInput,
   spawnAgent
 } from "../src/runtime.js";
@@ -162,6 +165,70 @@ test("applyRuntimeLimits does not brake while a human request is pending", () =>
 
   const result = applyRuntimeLimits(state);
   assert.equal(result.brake?.active, undefined);
+});
+
+test("resolveParentId returns undefined when no explicit and no env fallback", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-resolve-none-"));
+  const state = defaultState(root);
+  const prev = process.env.DUO_PROCESS_ID;
+  delete process.env.DUO_PROCESS_ID;
+  try {
+    assert.equal(resolveParentId(state, {}), undefined);
+    assert.equal(resolveParentId(state, { envFallback: true }), undefined);
+  } finally {
+    if (prev !== undefined) process.env.DUO_PROCESS_ID = prev;
+  }
+});
+
+test("resolveParentId falls back to orphan and warns when explicit parent is unknown", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-resolve-explicit-ghost-"));
+  const state = defaultState(root);
+  assert.equal(resolveParentId(state, { explicit: "proc_ghost" }), undefined);
+});
+
+test("resolveParentId returns the id when parent exists in state", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-resolve-happy-"));
+  const state = defaultState(root);
+  state.processes["proc_seed"] = makeIdleProcess("proc_seed", { status: "running" });
+  assert.equal(resolveParentId(state, { explicit: "proc_seed" }), "proc_seed");
+});
+
+test("cancelAgent records an event when tmux send-keys fails but still marks cancelled", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-cancel-tmux-fail-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  writeFileSync(join(binDir, "tmux"), "#!/usr/bin/env sh\nexit 1\n", "utf8");
+  chmodSync(join(binDir, "tmux"), 0o755);
+  const prevPath = process.env.PATH || "";
+  process.env.PATH = `${binDir}:${prevPath}`;
+  try {
+    const state = defaultState(root);
+    state.processes["proc_tgt"] = makeIdleProcess("proc_tgt", { status: "running" });
+    const next = cancelAgent(state, "proc_tgt");
+    assert.equal(next.processes["proc_tgt"].status, "cancelled");
+    assert.ok(next.events.some((event) => event.type === "tmux_cancel_failed"));
+  } finally {
+    process.env.PATH = prevPath;
+  }
+});
+
+test("closeProcess records an event when tmux kill-session fails but still marks closed", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-close-tmux-fail-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  writeFileSync(join(binDir, "tmux"), "#!/usr/bin/env sh\nexit 1\n", "utf8");
+  chmodSync(join(binDir, "tmux"), 0o755);
+  const prevPath = process.env.PATH || "";
+  process.env.PATH = `${binDir}:${prevPath}`;
+  try {
+    const state = defaultState(root);
+    state.processes["proc_tgt"] = makeIdleProcess("proc_tgt", { status: "running" });
+    const next = closeProcess(state, "proc_tgt");
+    assert.equal(next.processes["proc_tgt"].status, "closed");
+    assert.ok(next.events.some((event) => event.type === "tmux_close_failed"));
+  } finally {
+    process.env.PATH = prevPath;
+  }
 });
 
 test("applyRuntimeLimits brakes an idle process when no child and no pending human", () => {

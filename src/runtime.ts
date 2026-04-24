@@ -12,6 +12,25 @@ import {
   resolveIdleTimeoutMs,
   setBrake
 } from "./state.js";
+
+export function resolveParentId(
+  state: DuoState,
+  options: { explicit?: string; envFallback?: boolean } = {}
+): string | undefined {
+  const envParent = options.envFallback ? process.env.DUO_PROCESS_ID : undefined;
+  const candidate = options.explicit || envParent || undefined;
+  if (!candidate) {
+    return undefined;
+  }
+  if (state.processes[candidate]) {
+    return candidate;
+  }
+  const source = options.explicit ? "--parent" : "DUO_PROCESS_ID";
+  process.stderr.write(
+    `[duo] ${source}=${candidate} is set but not found in state; spawning as orphan.\n`
+  );
+  return undefined;
+}
 import { nowIso, shortId } from "./ids.js";
 
 const RUNTIME_COMMANDS: Record<RuntimeName, { env: string; command: string }> = {
@@ -191,8 +210,23 @@ export function cancelAgent(state: DuoState, processId: string): DuoState {
   if (!processRecord) {
     throw new Error(`unknown process: ${processId}`);
   }
-  spawnSync("tmux", ["send-keys", "-t", processRecord.tmuxSession, "C-c"], { encoding: "utf8" });
-  return markProcess(state, processId, "cancelled");
+  const result = spawnSync("tmux", ["send-keys", "-t", processRecord.tmuxSession, "C-c"], {
+    encoding: "utf8"
+  });
+  let next = state;
+  if (result.status !== 0) {
+    const detail = (result.stderr || result.stdout || "unknown tmux error").trim();
+    process.stderr.write(
+      `[duo] tmux cancel send-keys failed for ${processRecord.tmuxSession}: ${detail}\n`
+    );
+    next = appendEvent(
+      next,
+      "tmux_cancel_failed",
+      `tmux send-keys C-c failed for ${processRecord.tmuxSession}: ${detail}`,
+      processId
+    );
+  }
+  return markProcess(next, processId, "cancelled");
 }
 
 export function closeProcess(state: DuoState, processId: string): DuoState {
@@ -200,8 +234,23 @@ export function closeProcess(state: DuoState, processId: string): DuoState {
   if (!processRecord) {
     throw new Error(`unknown process: ${processId}`);
   }
-  spawnSync("tmux", ["kill-session", "-t", processRecord.tmuxSession], { encoding: "utf8" });
-  return markProcess(state, processId, "closed");
+  const result = spawnSync("tmux", ["kill-session", "-t", processRecord.tmuxSession], {
+    encoding: "utf8"
+  });
+  let next = state;
+  if (result.status !== 0) {
+    const detail = (result.stderr || result.stdout || "unknown tmux error").trim();
+    process.stderr.write(
+      `[duo] tmux kill-session failed for ${processRecord.tmuxSession}: ${detail}\n`
+    );
+    next = appendEvent(
+      next,
+      "tmux_close_failed",
+      `tmux kill-session failed for ${processRecord.tmuxSession}: ${detail}`,
+      processId
+    );
+  }
+  return markProcess(next, processId, "closed");
 }
 
 export function closeAllProcesses(state: DuoState, status: DuoProcess["status"] = "aborted"): DuoState {

@@ -228,6 +228,65 @@ test("duo close kills the tmux session and marks the process closed", () => {
   assert.match(readFileSync(tmuxLog, "utf8"), /kill-session/);
 });
 
+test("duo spawn --parent <ghost> falls back to orphan and warns", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-cli-parent-ghost-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  writeExecutable(join(binDir, "tmux"), "#!/usr/bin/env sh\nexit 0\n");
+  writeExecutable(join(binDir, "codex"), "#!/usr/bin/env sh\nexit 0\n");
+  const pathEnv = `${binDir}:${process.env.PATH || ""}`;
+
+  const result = spawnSync(
+    process.execPath,
+    [CLI_PATH, "-C", root, "spawn", "codex", "--parent", "proc_ghost_explicit", "--name", "orphan-explicit"],
+    { cwd: root, env: { ...process.env, PATH: pathEnv, DUO_PROCESS_ID: "" }, encoding: "utf8" }
+  );
+
+  assert.equal(result.status, 0, `exit ${result.status}; stderr=${result.stderr}`);
+  const spawned = JSON.parse(result.stdout) as { depth: number; parentId?: string };
+  assert.equal(spawned.parentId, undefined);
+  assert.equal(spawned.depth, 1);
+  assert.match(result.stderr, /--parent=proc_ghost_explicit is set but not found in state/);
+});
+
+test("duo send downgrades a stale system brake and proceeds", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-cli-send-downgrade-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  writeExecutable(join(binDir, "tmux"), "#!/usr/bin/env sh\nexit 0\n");
+  writeExecutable(join(binDir, "claude"), "#!/usr/bin/env sh\nexit 0\n");
+  const pathEnv = `${binDir}:${process.env.PATH || ""}`;
+
+  const spawnOut = execFileSync(
+    process.execPath,
+    [CLI_PATH, "-C", root, "spawn", "claude", "--name", "downgrade-target"],
+    { cwd: root, env: { ...process.env, PATH: pathEnv, DUO_PROCESS_ID: "" }, encoding: "utf8" }
+  );
+  const target = JSON.parse(spawnOut) as { id: string };
+
+  const statePath = join(root, ".duo", "state.json");
+  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  state.brake = {
+    active: true,
+    reason: "stale test brake",
+    createdBy: "system",
+    createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
+  };
+  writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
+
+  const sendResult = spawnSync(
+    process.execPath,
+    [CLI_PATH, "-C", root, "send", target.id, "hello"],
+    { cwd: root, env: { ...process.env, PATH: pathEnv }, encoding: "utf8" }
+  );
+  assert.equal(sendResult.status, 0, `exit ${sendResult.status}; stderr=${sendResult.stderr}`);
+  assert.match(sendResult.stderr, /stale system brake/);
+
+  const afterState = JSON.parse(readFileSync(statePath, "utf8"));
+  assert.equal(afterState.brake?.mode, "warn");
+  assert.ok(afterState.brake?.downgradedAt);
+});
+
 test("duo start does not inherit parent from DUO_PROCESS_ID env", () => {
   const root = mkdtempSync(join(tmpdir(), "duo-cli-start-no-inherit-"));
   const binDir = join(root, "bin");

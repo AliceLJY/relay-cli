@@ -19,6 +19,7 @@ import {
   closeProcess,
   getOutput,
   listRuntimes,
+  resolveParentId,
   sendInput,
   stabilizeProcess,
   spawnAgent
@@ -191,10 +192,13 @@ program
   .argument("<input...>")
   .action((processId: string, inputParts: string[]) => {
     const root = projectRoot();
-    withLockedState(root, (state) => ({
-      state: sendInput(state, processId, inputParts.join(" ")),
-      result: undefined
-    }));
+    withLockedState(root, (current) => {
+      const state = applyRuntimeLimits(current);
+      return {
+        state: sendInput(state, processId, inputParts.join(" ")),
+        result: undefined
+      };
+    });
     console.log(`sent: ${processId}`);
   });
 
@@ -205,7 +209,8 @@ program
   .option("-n, --lines <lines>", "number of lines", "80")
   .action((processId: string, options: { lines: string }) => {
     const root = projectRoot();
-    const result = withLockedState(root, (state) => {
+    const result = withLockedState(root, (current) => {
+      const state = applyRuntimeLimits(current);
       const next = getOutput(state, processId, Number(options.lines));
       return { state: next.state, result: next.output };
     });
@@ -218,10 +223,13 @@ program
   .argument("<processId>")
   .action((processId: string) => {
     const root = projectRoot();
-    withLockedState(root, (state) => ({
-      state: cancelAgent(state, processId),
-      result: undefined
-    }));
+    withLockedState(root, (current) => {
+      const state = applyRuntimeLimits(current);
+      return {
+        state: cancelAgent(state, processId),
+        result: undefined
+      };
+    });
     console.log(`cancelled: ${processId}`);
   });
 
@@ -231,10 +239,13 @@ program
   .argument("<processId>")
   .action((processId: string) => {
     const root = projectRoot();
-    withLockedState(root, (state) => ({
-      state: closeProcess(state, processId),
-      result: undefined
-    }));
+    withLockedState(root, (current) => {
+      const state = applyRuntimeLimits(current);
+      return {
+        state: closeProcess(state, processId),
+        result: undefined
+      };
+    });
     console.log(`closed: ${processId}`);
   });
 
@@ -299,19 +310,10 @@ function spawnManagedProcess(
 ) {
   const result = withLockedState(root, (current) => {
     const state = applyRuntimeLimits(current);
-    let parentId: string | undefined = options.parentId;
-    if (!parentId && options.inheritEnvParent) {
-      const envParent = process.env.DUO_PROCESS_ID;
-      if (envParent) {
-        if (state.processes[envParent]) {
-          parentId = envParent;
-        } else {
-          process.stderr.write(
-            `[duo] DUO_PROCESS_ID=${envParent} is set but not found in state; spawning as orphan.\n`
-          );
-        }
-      }
-    }
+    const parentId = resolveParentId(state, {
+      explicit: options.parentId,
+      envFallback: options.inheritEnvParent
+    });
     const spawned = spawnAgent(state, {
       runtime,
       name,
