@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -106,6 +106,91 @@ exit 0
   assert.doesNotMatch(tmuxCalls, /attach-session/);
   assert.match(tmuxCalls, /DUO_RUNTIME=codex\./);
   assert.match(tmuxCalls, /Task: implement child handoff/);
+});
+
+test("duo spawn inherits parentId from DUO_PROCESS_ID env when caller is registered", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-cli-spawn-env-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  writeExecutable(join(binDir, "tmux"), "#!/usr/bin/env sh\nexit 0\n");
+  writeExecutable(join(binDir, "codex"), "#!/usr/bin/env sh\nexit 0\n");
+  const pathEnv = `${binDir}:${process.env.PATH || ""}`;
+
+  const firstOut = execFileSync(
+    process.execPath,
+    [CLI_PATH, "-C", root, "spawn", "codex", "--name", "root-codex"],
+    { cwd: root, env: { ...process.env, PATH: pathEnv, DUO_PROCESS_ID: "" }, encoding: "utf8" }
+  );
+  const rootProcess = JSON.parse(firstOut) as { id: string; depth: number; parentId?: string };
+  assert.equal(rootProcess.depth, 1);
+  assert.equal(rootProcess.parentId, undefined);
+
+  const secondOut = execFileSync(
+    process.execPath,
+    [CLI_PATH, "-C", root, "spawn", "codex", "--name", "child-codex"],
+    {
+      cwd: root,
+      env: { ...process.env, PATH: pathEnv, DUO_PROCESS_ID: rootProcess.id },
+      encoding: "utf8"
+    }
+  );
+  const childProcess = JSON.parse(secondOut) as { id: string; depth: number; parentId?: string };
+  assert.equal(childProcess.parentId, rootProcess.id);
+  assert.equal(childProcess.depth, 2);
+});
+
+test("duo spawn falls back to orphan and warns when DUO_PROCESS_ID points to unknown process", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-cli-spawn-dangling-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  writeExecutable(join(binDir, "tmux"), "#!/usr/bin/env sh\nexit 0\n");
+  writeExecutable(join(binDir, "codex"), "#!/usr/bin/env sh\nexit 0\n");
+  const pathEnv = `${binDir}:${process.env.PATH || ""}`;
+
+  const result = spawnSync(
+    process.execPath,
+    [CLI_PATH, "-C", root, "spawn", "codex", "--name", "orphan-codex"],
+    {
+      cwd: root,
+      env: { ...process.env, PATH: pathEnv, DUO_PROCESS_ID: "proc_ghost_deadbeef" },
+      encoding: "utf8"
+    }
+  );
+
+  assert.equal(result.status, 0, `exit status ${result.status}; stderr=${result.stderr}`);
+  const spawned = JSON.parse(result.stdout) as { id: string; depth: number; parentId?: string };
+  assert.equal(spawned.parentId, undefined);
+  assert.equal(spawned.depth, 1);
+  assert.match(result.stderr, /DUO_PROCESS_ID=proc_ghost_deadbeef is set but not found in state/);
+});
+
+test("duo start does not inherit parent from DUO_PROCESS_ID env", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-cli-start-no-inherit-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  writeExecutable(join(binDir, "tmux"), "#!/usr/bin/env sh\nexit 0\n");
+  writeExecutable(join(binDir, "codex"), "#!/usr/bin/env sh\nexit 0\n");
+  const pathEnv = `${binDir}:${process.env.PATH || ""}`;
+
+  const firstOut = execFileSync(
+    process.execPath,
+    [CLI_PATH, "-C", root, "spawn", "codex", "--name", "seed-codex"],
+    { cwd: root, env: { ...process.env, PATH: pathEnv, DUO_PROCESS_ID: "" }, encoding: "utf8" }
+  );
+  const seed = JSON.parse(firstOut) as { id: string };
+
+  const startOut = execFileSync(
+    process.execPath,
+    [CLI_PATH, "-C", root, "start", "--parent", "codex", "--no-attach", "task"],
+    {
+      cwd: root,
+      env: { ...process.env, PATH: pathEnv, DUO_PROCESS_ID: seed.id },
+      encoding: "utf8"
+    }
+  );
+  const started = JSON.parse(startOut) as { depth: number; parentId?: string };
+  assert.equal(started.parentId, undefined);
+  assert.equal(started.depth, 1);
 });
 
 function writeExecutable(path: string, content: string): void {

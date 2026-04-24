@@ -119,13 +119,20 @@ program
 
 program
   .command("spawn")
-  .description("Manually spawn a Codex or Claude process.")
+  .description("Manually spawn a Codex or Claude process. Inherits parent from DUO_PROCESS_ID env when set.")
   .argument("<runtime>", "codex or claude")
   .argument("[prompt...]", "initial prompt")
   .option("--name <name>", "process display name")
-  .action((runtime: RuntimeName, promptParts: string[], options: { name?: string }) => {
+  .option("--parent <processId>", "explicit parent process id; overrides DUO_PROCESS_ID env")
+  .action((runtime: RuntimeName, promptParts: string[], options: { name?: string; parent?: string }) => {
     const root = projectRoot();
-    const result = spawnManagedProcess(root, runtime, promptParts.join(" ").trim() || undefined, options.name);
+    const result = spawnManagedProcess(
+      root,
+      runtime,
+      promptParts.join(" ").trim() || undefined,
+      options.name,
+      { inheritEnvParent: true, parentId: options.parent }
+    );
     console.log(JSON.stringify(result, null, 2));
   });
 
@@ -260,15 +267,30 @@ function spawnManagedProcess(
   root: string,
   runtime: RuntimeName,
   prompt?: string,
-  name?: string
+  name?: string,
+  options: { inheritEnvParent?: boolean; parentId?: string } = {}
 ) {
   const result = withLockedState(root, (current) => {
     const state = applyRuntimeLimits(current);
+    let parentId: string | undefined = options.parentId;
+    if (!parentId && options.inheritEnvParent) {
+      const envParent = process.env.DUO_PROCESS_ID;
+      if (envParent) {
+        if (state.processes[envParent]) {
+          parentId = envParent;
+        } else {
+          process.stderr.write(
+            `[duo] DUO_PROCESS_ID=${envParent} is set but not found in state; spawning as orphan.\n`
+          );
+        }
+      }
+    }
     const spawned = spawnAgent(state, {
       runtime,
       name,
       prompt,
-      cwd: root
+      cwd: root,
+      parentId
     });
     return { state: spawned.state, result: spawned.process };
   });
