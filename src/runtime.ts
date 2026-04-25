@@ -45,6 +45,7 @@ export interface SpawnAgentInput {
   prompt?: string;
   parentId?: string;
   cwd?: string;
+  bypassSandbox?: boolean;
 }
 
 export function listRuntimes(options: { checkAuth?: boolean } = {}): RuntimeInfo[] {
@@ -87,7 +88,21 @@ export function spawnAgent(state: DuoState, input: SpawnAgentInput): { state: Du
   const tmuxSession = `duo_${input.runtime}_${randomBytes(3).toString("hex")}`;
   const cwd = input.cwd || state.projectRoot;
   const initialPrompt = input.prompt ? buildAgentIntro({ id, runtime: input.runtime, depth }, input.prompt) : undefined;
-  const shellCommand = shellJoin([runtime.command, ...runtime.args, ...(initialPrompt ? [initialPrompt] : [])]);
+  // bypassSandbox: only meaningful for codex; routes through `codex exec
+  // --dangerously-bypass-approvals-and-sandbox` so the spawned codex can
+  // write files and run shell commands without per-action approval. This is
+  // a deliberate trust-the-prompt mode — only use it when you wrote the
+  // prompt yourself or you're driving codex from another agent you trust.
+  const bypassArgs =
+    input.bypassSandbox && input.runtime === "codex"
+      ? ["exec", "--dangerously-bypass-approvals-and-sandbox"]
+      : [];
+  const shellCommand = shellJoin([
+    runtime.command,
+    ...runtime.args,
+    ...bypassArgs,
+    ...(initialPrompt ? [initialPrompt] : [])
+  ]);
   const started = spawnSync(
     "tmux",
     [

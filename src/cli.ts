@@ -259,17 +259,34 @@ program
   .argument("[prompt...]", "initial prompt")
   .option("--name <name>", "process display name")
   .option("--parent <processId>", "explicit parent process id; overrides DUO_PROCESS_ID env")
-  .action((runtime: RuntimeName, promptParts: string[], options: { name?: string; parent?: string }) => {
-    const root = projectRoot();
-    const result = spawnManagedProcess(
-      root,
-      runtime,
-      promptParts.join(" ").trim() || undefined,
-      options.name,
-      { inheritEnvParent: true, parentId: options.parent }
-    );
-    console.log(JSON.stringify(result, null, 2));
-  });
+  .option(
+    "--bypass-sandbox",
+    "codex only: route through `codex exec --dangerously-bypass-approvals-and-sandbox` so the spawned codex can write files and run commands without per-action approval. Trust the prompt before using this."
+  )
+  .action(
+    (
+      runtime: RuntimeName,
+      promptParts: string[],
+      options: { name?: string; parent?: string; bypassSandbox?: boolean }
+    ) => {
+      if (options.bypassSandbox && runtime !== "codex") {
+        process.stderr.write("[duo] --bypass-sandbox only applies to codex; ignored for claude.\n");
+      }
+      const root = projectRoot();
+      const result = spawnManagedProcess(
+        root,
+        runtime,
+        promptParts.join(" ").trim() || undefined,
+        options.name,
+        {
+          inheritEnvParent: true,
+          parentId: options.parent,
+          bypassSandbox: options.bypassSandbox && runtime === "codex"
+        }
+      );
+      console.log(JSON.stringify(result, null, 2));
+    }
+  );
 
 program
   .command("pair")
@@ -499,7 +516,7 @@ function spawnManagedProcess(
   runtime: RuntimeName,
   prompt?: string,
   name?: string,
-  options: { inheritEnvParent?: boolean; parentId?: string } = {}
+  options: { inheritEnvParent?: boolean; parentId?: string; bypassSandbox?: boolean } = {}
 ) {
   const result = withLockedState(root, (current) => {
     const state = applyRuntimeLimits(current);
@@ -512,7 +529,8 @@ function spawnManagedProcess(
       name,
       prompt,
       cwd: root,
-      parentId
+      parentId,
+      bypassSandbox: options.bypassSandbox
     });
     return { state: spawned.state, result: spawned.process };
   });
