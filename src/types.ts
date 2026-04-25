@@ -39,6 +39,7 @@ export interface DuoProcess {
   tmuxSession: string;
   cwd: string;
   pid?: number;
+  prompt?: string;
   createdAt: string;
   updatedAt: string;
   lastOutputAt?: string;

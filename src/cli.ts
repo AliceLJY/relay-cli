@@ -5,6 +5,7 @@ import { startMcpServer } from "./mcp-server.js";
 import { clearTerminal, readWatchSnapshot, renderWatchFrameWithLayout } from "./watch.js";
 import {
   answerLatestHumanRequest,
+  clearBrake,
   latestEvents,
   readState,
   setBrake,
@@ -27,6 +28,7 @@ import {
 import type { RuntimeName } from "./types.js";
 
 const VERSION = "0.1.0";
+const ACTIVE_STATUSES = new Set(["running", "blocked"]);
 
 const program = new Command();
 
@@ -49,6 +51,22 @@ program.command("status").description("Show current duo status.").action(() => {
   });
   printStatus(state);
 });
+
+program
+  .command("list")
+  .description("List all duo processes with their starting prompt.")
+  .option("-n, --limit <n>", "show only the most recent N entries")
+  .option("--all", "include closed/aborted/timeout processes (default: only active)")
+  .option("--json", "emit JSON instead of a table")
+  .action((options: { limit?: string; all?: boolean; json?: boolean }) => {
+    const root = projectRoot();
+    const state = readState(root);
+    printProcessList(state, {
+      limit: options.limit ? Number(options.limit) : undefined,
+      includeFinished: Boolean(options.all),
+      json: Boolean(options.json)
+    });
+  });
 
 program
   .command("brake")
@@ -104,6 +122,10 @@ program
   .option("--no-attach", "return after spawning instead of attaching to the parent session")
   .action((promptParts: string[], options: { parent: RuntimeName; name?: string; attach?: boolean }) => {
     const root = projectRoot();
+    withLockedState(root, (state) => ({
+      state: state.brake?.active ? clearBrake(state, "start: fresh") : state,
+      result: undefined
+    }));
     const parent = spawnManagedProcess(
       root,
       options.parent,
@@ -299,6 +321,41 @@ function printStatus(state: ReturnType<typeof readState>): void {
   for (const event of latestEvents(state, 5)) {
     console.log(`- ${event.createdAt} ${event.type}: ${event.message}`);
   }
+}
+
+function printProcessList(
+  state: ReturnType<typeof readState>,
+  options: { limit?: number; includeFinished: boolean; json: boolean }
+): void {
+  const all = Object.values(state.processes).sort((a, b) =>
+    a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0
+  );
+  const filtered = options.includeFinished ? all : all.filter((p) => ACTIVE_STATUSES.has(p.status));
+  const sliced = options.limit ? filtered.slice(0, options.limit) : filtered;
+
+  if (options.json) {
+    console.log(JSON.stringify(sliced, null, 2));
+    return;
+  }
+
+  if (sliced.length === 0) {
+    console.log(options.includeFinished ? "no processes" : "no active processes (use --all to include finished)");
+    return;
+  }
+
+  for (const p of sliced) {
+    const when = p.createdAt.replace("T", " ").slice(0, 19);
+    const subject = summarizePrompt(p.prompt);
+    console.log(`${p.id}  ${p.runtime.padEnd(6)} ${p.status.padEnd(8)} ${when}  ${p.name}  ${subject}`);
+  }
+}
+
+function summarizePrompt(prompt: string | undefined): string {
+  if (!prompt) {
+    return "(no prompt)";
+  }
+  const compact = prompt.replace(/\s+/g, " ").trim();
+  return compact.length > 80 ? `${compact.slice(0, 77)}...` : compact;
 }
 
 function spawnManagedProcess(

@@ -124,6 +124,7 @@ export function spawnAgent(state: DuoState, input: SpawnAgentInput): { state: Du
     depth,
     tmuxSession,
     cwd,
+    prompt: input.prompt,
     createdAt: now,
     updatedAt: now,
     failureCount: 0
