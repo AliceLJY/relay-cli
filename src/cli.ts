@@ -54,18 +54,50 @@ program.command("status").description("Show current duo status.").action(() => {
 
 program
   .command("list")
-  .description("List all duo processes with their starting prompt.")
+  .description("List parent processes with their starting prompt (default: active parents only).")
   .option("-n, --limit <n>", "show only the most recent N entries")
   .option("--all", "include closed/aborted/timeout processes (default: only active)")
+  .option("--children", "include child processes spawned by parents (default: parents only)")
   .option("--json", "emit JSON instead of a table")
-  .action((options: { limit?: string; all?: boolean; json?: boolean }) => {
+  .action((options: { limit?: string; all?: boolean; children?: boolean; json?: boolean }) => {
     const root = projectRoot();
     const state = readState(root);
     printProcessList(state, {
       limit: options.limit ? Number(options.limit) : undefined,
       includeFinished: Boolean(options.all),
+      includeChildren: Boolean(options.children),
       json: Boolean(options.json)
     });
+  });
+
+program
+  .command("enter")
+  .description("Attach to a running parent's tmux session by id prefix.")
+  .argument("<prefix>", "process id or its short prefix")
+  .action((prefix: string) => {
+    const root = projectRoot();
+    const state = readState(root);
+    const matches = Object.values(state.processes).filter(
+      (p) => p.id.startsWith(prefix) || p.id.startsWith(`proc_${prefix}`)
+    );
+    if (matches.length === 0) {
+      throw new Error(`no process matches prefix: ${prefix}`);
+    }
+    if (matches.length > 1) {
+      const lines = matches.map((p) => `  ${p.id} ${p.runtime} ${p.status} ${p.name}`).join("\n");
+      throw new Error(`prefix '${prefix}' matches ${matches.length} processes:\n${lines}`);
+    }
+    const target = matches[0];
+    if (target.status !== "running" && target.status !== "blocked") {
+      throw new Error(`process ${target.id} is ${target.status}; cannot attach`);
+    }
+    const attached = spawnSync("tmux", ["attach-session", "-t", target.tmuxSession], {
+      stdio: "inherit",
+      encoding: "utf8"
+    });
+    if (attached.status !== 0) {
+      throw new Error(`tmux attach failed: ${attached.stderr || attached.stdout}`);
+    }
   });
 
 program
@@ -325,12 +357,13 @@ function printStatus(state: ReturnType<typeof readState>): void {
 
 function printProcessList(
   state: ReturnType<typeof readState>,
-  options: { limit?: number; includeFinished: boolean; json: boolean }
+  options: { limit?: number; includeFinished: boolean; includeChildren: boolean; json: boolean }
 ): void {
   const all = Object.values(state.processes).sort((a, b) =>
     a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0
   );
-  const filtered = options.includeFinished ? all : all.filter((p) => ACTIVE_STATUSES.has(p.status));
+  const byStatus = options.includeFinished ? all : all.filter((p) => ACTIVE_STATUSES.has(p.status));
+  const filtered = options.includeChildren ? byStatus : byStatus.filter((p) => p.depth === 1);
   const sliced = options.limit ? filtered.slice(0, options.limit) : filtered;
 
   if (options.json) {
@@ -339,14 +372,21 @@ function printProcessList(
   }
 
   if (sliced.length === 0) {
-    console.log(options.includeFinished ? "no processes" : "no active processes (use --all to include finished)");
+    if (options.includeFinished && options.includeChildren) {
+      console.log("no processes");
+    } else if (options.includeFinished) {
+      console.log("no parent processes (use --children to include child agents)");
+    } else {
+      console.log("no active parent processes (use --all to include finished, --children for children)");
+    }
     return;
   }
 
   for (const p of sliced) {
     const when = p.createdAt.replace("T", " ").slice(0, 19);
     const subject = summarizePrompt(p.prompt);
-    console.log(`${p.id}  ${p.runtime.padEnd(6)} ${p.status.padEnd(8)} ${when}  ${p.name}  ${subject}`);
+    const depthMark = p.depth === 1 ? "  " : `→${p.depth}`;
+    console.log(`${depthMark} ${p.id}  ${p.runtime.padEnd(6)} ${p.status.padEnd(8)} ${when}  ${p.name}  ${subject}`);
   }
 }
 
