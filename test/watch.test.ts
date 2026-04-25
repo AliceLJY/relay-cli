@@ -122,6 +122,49 @@ test("renderWatchFrameWithLayout shows parent-child hierarchy in stack mode even
   assert.ok(frame.indexOf("proc_parent") < frame.indexOf("proc_child"));
 });
 
+test("renderWatchFrameWithLayout keeps child labels when the parent is hidden", () => {
+  const state = defaultState("/tmp/duo-watch");
+  state.processes.proc_parent = {
+    id: "proc_parent",
+    runtime: "claude",
+    name: "parent",
+    status: "running",
+    depth: 1,
+    tmuxSession: "parent",
+    cwd: "/tmp/duo-watch",
+    createdAt: "2026-04-24T00:00:00.000Z",
+    updatedAt: "2026-04-24T00:00:00.000Z",
+    failureCount: 0
+  };
+  state.processes.proc_child = {
+    id: "proc_child",
+    runtime: "codex",
+    name: "child",
+    status: "running",
+    parentId: "proc_parent",
+    depth: 2,
+    tmuxSession: "child",
+    cwd: "/tmp/duo-watch",
+    createdAt: "2026-04-24T00:00:01.000Z",
+    updatedAt: "2026-04-24T00:00:01.000Z",
+    failureCount: 0
+  };
+
+  const frame = renderWatchFrameWithLayout(
+    {
+      state,
+      capturedAt: "2026-04-24T00:00:02.000Z",
+      processes: [
+        { process: state.processes.proc_child, output: "CHILD" }
+      ]
+    },
+    { layout: "columns", terminalWidth: 120 }
+  );
+
+  assert.match(frame, /child\(proc_parent\)> child \| proc_child/);
+  assert.doesNotMatch(frame, /orphan\(proc_parent\)/);
+});
+
 test("renderWatchFrameWithLayout labels orphan children when parent is not visible", () => {
   const state = defaultState("/tmp/duo-watch");
   state.processes.proc_orphan = {
@@ -172,7 +215,8 @@ test("shouldShowInWatch keeps recently finished processes visible", () => {
     runtime: "claude" as const,
     name: "recent closed",
     status: "closed" as const,
-    depth: 1,
+    parentId: "proc_parent",
+    depth: 2,
     tmuxSession: "demo",
     cwd: "/tmp/duo-watch",
     createdAt: "2026-04-24T00:00:00.000Z",
@@ -194,5 +238,70 @@ test("shouldShowInWatch keeps recently finished processes visible", () => {
       recentWindowMs: 60_000
     }),
     false
+  );
+});
+
+test("shouldShowInWatch hides root parents by default", () => {
+  const rootParent = {
+    id: "proc_parent",
+    runtime: "claude" as const,
+    name: "parent",
+    status: "running" as const,
+    depth: 1,
+    tmuxSession: "parent",
+    cwd: "/tmp/duo-watch",
+    createdAt: "2026-04-24T00:00:00.000Z",
+    updatedAt: "2026-04-24T00:00:00.000Z",
+    failureCount: 0
+  };
+
+  assert.equal(
+    shouldShowInWatch(rootParent, {
+      now: Date.parse("2026-04-24T00:01:00.000Z"),
+      recentWindowMs: 60_000
+    }),
+    false
+  );
+
+  assert.equal(
+    shouldShowInWatch(rootParent, {
+      includeRoots: true,
+      now: Date.parse("2026-04-24T00:01:00.000Z"),
+      recentWindowMs: 60_000
+    }),
+    true
+  );
+
+  assert.equal(
+    shouldShowInWatch(rootParent, {
+      includeAll: true,
+      now: Date.parse("2026-04-24T00:01:00.000Z"),
+      recentWindowMs: 60_000
+    }),
+    true
+  );
+});
+
+test("shouldShowInWatch shows active children by default", () => {
+  const child = {
+    id: "proc_child",
+    runtime: "codex" as const,
+    name: "child",
+    status: "running" as const,
+    parentId: "proc_parent",
+    depth: 2,
+    tmuxSession: "child",
+    cwd: "/tmp/duo-watch",
+    createdAt: "2026-04-24T00:00:00.000Z",
+    updatedAt: "2026-04-24T00:00:00.000Z",
+    failureCount: 0
+  };
+
+  assert.equal(
+    shouldShowInWatch(child, {
+      now: Date.parse("2026-04-24T00:01:00.000Z"),
+      recentWindowMs: 60_000
+    }),
+    true
   );
 });

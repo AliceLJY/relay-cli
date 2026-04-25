@@ -303,7 +303,8 @@ program
             lines: options.lines,
             interval: options.interval,
             recentSeconds: options.recentSeconds,
-            layout: options.layout
+            layout: options.layout,
+            includeRoots: true
           });
           return;
         }
@@ -551,6 +552,7 @@ async function runWatchLoop(
     recentSeconds: string;
     layout: "stack" | "columns";
     all?: boolean;
+    includeRoots?: boolean;
     once?: boolean;
   }
 ): Promise<void> {
@@ -562,6 +564,7 @@ async function runWatchLoop(
     const snapshot = readWatchSnapshot(root, {
       lines,
       includeAll: options.all,
+      includeRoots: options.includeRoots,
       recentWindowMs
     });
     if (process.stdout.isTTY) {

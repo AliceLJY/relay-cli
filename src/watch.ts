@@ -13,7 +13,7 @@ export interface WatchSnapshot {
 
 export function readWatchSnapshot(
   projectRoot: string,
-  options: { lines: number; includeAll?: boolean; recentWindowMs?: number }
+  options: { lines: number; includeAll?: boolean; includeRoots?: boolean; recentWindowMs?: number }
 ): WatchSnapshot {
   const state = readState(projectRoot);
   const recentWindowMs = options.recentWindowMs ?? 2 * 60 * 1000;
@@ -22,6 +22,7 @@ export function readWatchSnapshot(
     Object.values(state.processes)
     .filter((processRecord) => shouldShowInWatch(processRecord, {
       includeAll: options.includeAll,
+      includeRoots: options.includeRoots,
       recentWindowMs,
       now
     }))
@@ -50,6 +51,7 @@ export function renderWatchFrameWithLayout(
   options: { layout: "stack" | "columns"; terminalWidth: number }
 ): string {
   const visibleProcessIds = new Set(snapshot.processes.map(({ process }) => process.id));
+  const knownProcessIds = new Set(Object.keys(snapshot.state.processes));
   const header = [
     "duo watch",
     `captured: ${snapshot.capturedAt}`,
@@ -69,7 +71,7 @@ export function renderWatchFrameWithLayout(
     const body = output.trim() || "[no captured output yet]";
     return [
       "=".repeat(80),
-      describeProcessForWatch(process, visibleProcessIds),
+      describeProcessForWatch(process, visibleProcessIds, knownProcessIds),
       "-".repeat(80),
       body
     ].join("\n");
@@ -84,10 +86,13 @@ export function clearTerminal(): void {
 
 export function shouldShowInWatch(
   processRecord: DuoProcess,
-  options: { includeAll?: boolean; recentWindowMs: number; now: number }
+  options: { includeAll?: boolean; includeRoots?: boolean; recentWindowMs: number; now: number }
 ): boolean {
   if (options.includeAll) {
     return true;
+  }
+  if (!processRecord.parentId && !options.includeRoots) {
+    return false;
   }
   if (processRecord.status === "running" || processRecord.status === "blocked") {
     return true;
@@ -111,9 +116,10 @@ function renderColumnsFrame(snapshot: WatchSnapshot, header: string, terminalWid
   const gap = "  ";
   const columnWidth = Math.max(40, Math.floor((terminalWidth - gap.length) / 2));
   const visibleProcessIds = new Set(snapshot.processes.map(({ process }) => process.id));
+  const knownProcessIds = new Set(Object.keys(snapshot.state.processes));
 
   const columns = selected.map(({ process, output }) => {
-    const title = describeProcessForWatch(process, visibleProcessIds);
+    const title = describeProcessForWatch(process, visibleProcessIds, knownProcessIds);
     const body = (output.trim() || "[no captured output yet]").split("\n");
     return fitBlock([title, "-".repeat(Math.max(10, columnWidth - 2)), ...body], columnWidth);
   });
@@ -206,20 +212,28 @@ function hasVisibleHierarchy(processes: WatchSnapshot["processes"], visibleProce
   return processes.some(({ process }) => Boolean(process.parentId && visibleProcessIds.has(process.parentId)));
 }
 
-function describeProcessForWatch(processRecord: DuoProcess, visibleProcessIds: Set<string>): string {
+function describeProcessForWatch(
+  processRecord: DuoProcess,
+  visibleProcessIds: Set<string>,
+  knownProcessIds: Set<string>
+): string {
   const indent = "  ".repeat(Math.max(0, processRecord.depth - 1));
-  const relation = describeProcessRelation(processRecord, visibleProcessIds);
+  const relation = describeProcessRelation(processRecord, visibleProcessIds, knownProcessIds);
   return `${indent}${relation} ${processRecord.name} | ${processRecord.id} | ${processRecord.runtime} | ${processRecord.status} | depth=${processRecord.depth}`;
 }
 
-function describeProcessRelation(processRecord: DuoProcess, visibleProcessIds: Set<string>): string {
+function describeProcessRelation(
+  processRecord: DuoProcess,
+  visibleProcessIds: Set<string>,
+  knownProcessIds: Set<string>
+): string {
   if (!processRecord.parentId) {
     return "root>";
   }
-  if (!visibleProcessIds.has(processRecord.parentId)) {
-    return `orphan(${processRecord.parentId})>`;
+  if (visibleProcessIds.has(processRecord.parentId) || knownProcessIds.has(processRecord.parentId)) {
+    return `child(${processRecord.parentId})>`;
   }
-  return `child(${processRecord.parentId})>`;
+  return `orphan(${processRecord.parentId})>`;
 }
 
 function byCreatedAt(left: DuoProcess, right: DuoProcess): number {
