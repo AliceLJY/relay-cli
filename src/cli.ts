@@ -148,7 +148,7 @@ program
 program
   .command("start")
   .description("Start one chosen parent runtime and attach to its tmux session.")
-  .addOption(new Option("--parent <runtime>", "codex or claude").choices(["codex", "claude"]).default("claude"))
+  .addOption(new Option("--parent <runtime>", "codex or claude").choices(["codex", "claude"]).makeOptionMandatory())
   .argument("[prompt...]", "initial parent task")
   .option("--name <name>", "process display name")
   .option("--no-attach", "return after spawning instead of attaching to the parent session")
