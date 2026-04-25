@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join as pathJoin } from "node:path";
 import { Command, Option } from "commander";
 import { startMcpServer } from "./mcp-server.js";
 import { clearTerminal, readWatchSnapshot, renderWatchFrameWithLayout } from "./watch.js";
@@ -97,6 +100,82 @@ program
     });
     if (attached.status !== 0) {
       throw new Error(`tmux attach failed: ${attached.stderr || attached.stdout}`);
+    }
+  });
+
+program
+  .command("show")
+  .description("Show the chat log of a duo claude process by id prefix.")
+  .argument("<prefix>", "process id or its short prefix")
+  .option("--raw", "print the jsonl path instead of formatted dialogue")
+  .option("--window <seconds>", "search window around proc createdAt", "120")
+  .action((prefix: string, options: { raw?: boolean; window: string }) => {
+    const root = projectRoot();
+    const state = readState(root);
+    const matches = Object.values(state.processes).filter(
+      (p) => p.id.startsWith(prefix) || p.id.startsWith(`proc_${prefix}`)
+    );
+    if (matches.length === 0) {
+      throw new Error(`no process matches prefix: ${prefix}`);
+    }
+    if (matches.length > 1) {
+      const lines = matches.map((p) => `  ${p.id} ${p.runtime} ${p.status} ${p.name}`).join("\n");
+      throw new Error(`prefix '${prefix}' matches ${matches.length} processes:\n${lines}`);
+    }
+    const proc = matches[0];
+    if (proc.runtime !== "claude") {
+      throw new Error(`only claude processes have chat logs (this is ${proc.runtime})`);
+    }
+
+    const encoded = "-" + proc.cwd.split("/").filter(Boolean).join("-");
+    const projectDir = pathJoin(homedir(), ".claude", "projects", encoded);
+    if (!existsSync(projectDir)) {
+      throw new Error(`claude project dir not found: ${projectDir}`);
+    }
+
+    const targetMs = Date.parse(proc.createdAt);
+    const windowMs = Number(options.window) * 1000;
+    const candidates = readdirSync(projectDir)
+      .filter((n) => n.endsWith(".jsonl"))
+      .map((n) => {
+        const stat = statSync(pathJoin(projectDir, n));
+        return { name: n, birth: stat.birthtimeMs, mtime: stat.mtimeMs };
+      })
+      .filter((f) => Math.abs(f.birth - targetMs) <= windowMs)
+      .sort((a, b) => Math.abs(a.birth - targetMs) - Math.abs(b.birth - targetMs));
+
+    if (candidates.length === 0) {
+      throw new Error(
+        `no chat log found within ${options.window}s of ${proc.createdAt} in ${projectDir}`
+      );
+    }
+
+    const jsonlPath = pathJoin(projectDir, candidates[0].name);
+    if (options.raw) {
+      console.log(jsonlPath);
+      return;
+    }
+
+    console.log(`# duo chat log: ${proc.id} (${proc.name})\n`);
+    console.log(`> source: ${jsonlPath}`);
+    console.log(`> proc: ${proc.runtime} started at ${proc.createdAt}, status ${proc.status}\n`);
+
+    const content = readFileSync(jsonlPath, "utf8");
+    for (const line of content.split("\n")) {
+      if (!line) continue;
+      let evt: { type?: string; timestamp?: string; message?: { content?: unknown } };
+      try {
+        evt = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (evt.type !== "user" && evt.type !== "assistant") continue;
+      const text = extractText(evt.message?.content);
+      if (!text) continue;
+      const ts = evt.timestamp ? evt.timestamp.replace("T", " ").slice(0, 19) : "";
+      console.log(`---\n## ${evt.type === "user" ? "User" : "Assistant"}  ${ts}\n`);
+      console.log(text);
+      console.log();
     }
   });
 
@@ -388,6 +467,22 @@ function printProcessList(
     const depthMark = p.depth === 1 ? "  " : `→${p.depth}`;
     console.log(`${depthMark} ${p.id}  ${p.runtime.padEnd(6)} ${p.status.padEnd(8)} ${when}  ${p.name}  ${subject}`);
   }
+}
+
+function extractText(content: unknown): string {
+  if (!content) return "";
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const block of content) {
+      if (block && typeof block === "object") {
+        const b = block as { type?: string; text?: string };
+        if (b.type === "text" && b.text) parts.push(b.text);
+      }
+    }
+    return parts.join("\n");
+  }
+  return "";
 }
 
 function summarizePrompt(prompt: string | undefined): string {
