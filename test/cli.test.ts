@@ -287,6 +287,76 @@ test("duo send downgrades a stale system brake and proceeds", () => {
   assert.ok(afterState.brake?.downgradedAt);
 });
 
+test("duo start clears stale running parents so applyRuntimeLimits cannot re-brake", () => {
+  // 复现：state.json 里残留一个 idle 超时的 running parent。原本 start 命令第一个
+  // transaction 清掉 brake，但 spawnManagedProcess 内部第二个 transaction 调
+  // applyRuntimeLimits 时，stale parent 仍是 "running"、idle > 30min，于是 setBrake
+  // 重新触发 system brake，spawnAgent 抛 "duo is braked: process timeout: …"。
+  // 修复：start 在清 brake 的同一个 transaction 里，把 idle 超时的 running/blocked
+  // 一并 close，让后续 applyRuntimeLimits 找不到目标。
+  const root = mkdtempSync(join(tmpdir(), "duo-cli-stale-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  writeExecutable(join(binDir, "tmux"), "#!/usr/bin/env sh\nexit 0\n");
+  writeExecutable(join(binDir, "codex"), "#!/usr/bin/env sh\nexit 0\n");
+
+  const duoDir = join(root, ".duo");
+  mkdirSync(duoDir, { recursive: true });
+  const staleAt = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 1h ago, well past 30min idle timeout
+  writeFileSync(
+    join(duoDir, "state.json"),
+    JSON.stringify(
+      {
+        version: 1,
+        projectRoot: root,
+        limits: { maxDepth: 2, maxFailures: 3 },
+        processes: {
+          proc_stale: {
+            id: "proc_stale",
+            runtime: "claude",
+            name: "parent-claude",
+            status: "running",
+            depth: 1,
+            tmuxSession: "duo_claude_dead",
+            cwd: root,
+            createdAt: staleAt,
+            updatedAt: staleAt,
+            lastOutputAt: staleAt,
+            failureCount: 0
+          }
+        },
+        humanRequests: {},
+        events: [],
+        failureCount: 0,
+        updatedAt: staleAt
+      },
+      null,
+      2
+    )
+  );
+
+  const result = spawnSync(
+    process.execPath,
+    [CLI_PATH, "-C", root, "start", "--parent", "codex", "--no-attach", "fresh"],
+    {
+      cwd: root,
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH || ""}` },
+      encoding: "utf8"
+    }
+  );
+  assert.equal(result.status, 0, `duo start failed: ${result.stderr}`);
+
+  const after = JSON.parse(readFileSync(join(root, ".duo", "state.json"), "utf8")) as {
+    brake?: { active?: boolean };
+    processes: Record<string, { name: string; status: string }>;
+  };
+  assert.ok(!after.brake?.active, `unexpected brake set: ${JSON.stringify(after.brake)}`);
+  assert.equal(after.processes.proc_stale.status, "closed");
+  const fresh = Object.values(after.processes).filter((p) => p.name === "parent-codex");
+  assert.equal(fresh.length, 1);
+  assert.equal(fresh[0].status, "running");
+});
+
 test("duo start does not inherit parent from DUO_PROCESS_ID env", () => {
   const root = mkdtempSync(join(tmpdir(), "duo-cli-start-no-inherit-"));
   const binDir = join(root, "bin");

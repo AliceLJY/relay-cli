@@ -11,6 +11,7 @@ import {
   clearBrake,
   latestEvents,
   readState,
+  resolveIdleTimeoutMs,
   setBrake,
   withLockedState,
   writeState,
@@ -233,10 +234,22 @@ program
   .option("--no-attach", "return after spawning instead of attaching to the parent session")
   .action((promptParts: string[], options: { parent: RuntimeName; name?: string; attach?: boolean }) => {
     const root = projectRoot();
-    withLockedState(root, (state) => ({
-      state: state.brake?.active ? clearBrake(state, "start: fresh") : state,
-      result: undefined
-    }));
+    withLockedState(root, (state) => {
+      let next = state.brake?.active ? clearBrake(state, "start: fresh") : state;
+      // start = 新开 parent。把 idle 超时的 running/blocked stale process 一并关掉，
+      // 否则 spawnManagedProcess 里的 applyRuntimeLimits 会因这些幽灵进程立刻
+      // 重新 setBrake，spawnAgent 抛 "duo is braked: process timeout: ..."，
+      // 即使前一步刚清了 brake 也救不回。
+      const idleTimeoutMs = resolveIdleTimeoutMs(next);
+      const now = Date.now();
+      for (const proc of Object.values(next.processes)) {
+        if (proc.status !== "running" && proc.status !== "blocked") continue;
+        const observedAt = Date.parse(proc.lastOutputAt || proc.createdAt);
+        if (now - observedAt <= idleTimeoutMs) continue;
+        next = closeProcess(next, proc.id);
+      }
+      return { state: next, result: undefined };
+    });
     const parent = spawnManagedProcess(
       root,
       options.parent,
