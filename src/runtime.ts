@@ -85,6 +85,14 @@ export function spawnAgent(state: DuoState, input: SpawnAgentInput): { state: Du
     throw new Error(`runtime not available: ${input.runtime} (${runtime.command})`);
   }
 
+  // Fail-fast on unknown parentId so the strict-parent invariant lives in
+  // spawnAgent itself, not only at the MCP entry point. Without this, a
+  // direct caller passing a stale or wrong parentId would create a depth=1
+  // "fake root" that still records the dead parentId, leading to orphans
+  // that watch hides and hierarchy logic mis-roots.
+  if (input.parentId && !state.processes[input.parentId]) {
+    throw new Error(`unknown parentId: ${input.parentId} not found in state.processes`);
+  }
   const parent = input.parentId ? state.processes[input.parentId] : undefined;
   const depth = parent ? parent.depth + 1 : 1;
   if (depth > state.limits.maxDepth) {
@@ -95,14 +103,32 @@ export function spawnAgent(state: DuoState, input: SpawnAgentInput): { state: Du
   const tmuxSession = `duo_${input.runtime}_${randomBytes(3).toString("hex")}`;
   const cwd = input.cwd || state.projectRoot;
   const initialPrompt = input.prompt ? buildAgentIntro({ id, runtime: input.runtime, depth }, input.prompt) : undefined;
-  // bypassSandbox: only meaningful for codex; routes through `codex exec
-  // --dangerously-bypass-approvals-and-sandbox` so the spawned codex can
-  // write files and run shell commands without per-action approval. This is
-  // a deliberate trust-the-prompt mode — only use it when you wrote the
-  // prompt yourself or you're driving codex from another agent you trust.
+  // bypassSandbox: only meaningful for codex; passes
+  // `--dangerously-bypass-approvals-and-sandbox` to the interactive codex
+  // TUI so the spawned codex can write files and run shell commands without
+  // per-action approval while remaining in a long-lived session that the
+  // parent agent can keep talking to. Do NOT route through `codex exec` —
+  // that subcommand is one-shot and tears down the tmux pane on exit, which
+  // breaks duo's continuous-conversation contract. This is a deliberate
+  // trust-the-prompt mode — only use it when you wrote the prompt yourself
+  // or you're driving codex from another agent you trust.
+  if (
+    input.bypassSandbox &&
+    input.runtime === "codex" &&
+    runtime.args.some((arg) => arg === "exec" || arg === "e")
+  ) {
+    // Belt-and-suspenders: if DUO_CODEX_CMD is set to "codex exec" (or its
+    // alias "codex e"), the args array sneaks the one-shot subcommand back
+    // in even though the bypassArgs path itself no longer adds it. Refuse
+    // to spawn rather than silently regress to a session that tears down
+    // on completion.
+    throw new Error(
+      `DUO_CODEX_CMD must not include the "exec" subcommand when bypassSandbox=true; codex exec is one-shot and breaks duo's continuous-conversation contract. Got args: ${JSON.stringify(runtime.args)}`
+    );
+  }
   const bypassArgs =
     input.bypassSandbox && input.runtime === "codex"
-      ? ["exec", "--dangerously-bypass-approvals-and-sandbox"]
+      ? ["--dangerously-bypass-approvals-and-sandbox"]
       : [];
   const shellCommand = shellJoin([
     runtime.command,
@@ -180,7 +206,24 @@ export function sendInput(state: DuoState, processId: string, input: string): Du
     throw new Error(`process is not input-ready: ${processRecord.status}`);
   }
 
-  sendInputToTmux(processRecord.tmuxSession, input, processRecord.runtime);
+  // Same lifecycle hook as getOutput: when tmux send-keys fails (typically
+  // because the underlying session vanished), persist the failure into duo
+  // state instead of throwing through withLockedState's finally and dropping
+  // it. State stays the single source of truth for child liveness.
+  try {
+    sendInputToTmux(processRecord.tmuxSession, input, processRecord.runtime);
+  } catch (error) {
+    const detail = (error as Error).message;
+    process.stderr.write(
+      `[duo] tmux send-keys failed for ${processRecord.tmuxSession}: ${detail}\n`
+    );
+    return appendEvent(
+      markProcess(state, processId, "failed"),
+      "tmux_send_failed",
+      `tmux send-keys failed for ${processRecord.tmuxSession}: ${detail}`,
+      processId
+    );
+  }
   const updated = {
     ...processRecord,
     status: "running" as const,
@@ -211,8 +254,25 @@ export function getOutput(state: DuoState, processId: string, lines = 80): { sta
   });
 
   if (captured.status !== 0) {
-    const next = markProcess(state, processId, "failed");
-    throw new Error(`tmux capture failed: ${captured.stderr || captured.stdout}`);
+    // The previous implementation computed `next = markProcess(...)` and then
+    // threw, which caused withLockedState's finally to skip writeState — so
+    // the "failed" status was never persisted. Surface the failure through
+    // the returned output instead, and persist the marker plus a
+    // tmux_capture_failed event so the next read of state shows the truth.
+    const detail = (captured.stderr || captured.stdout || "unknown tmux error").trim();
+    process.stderr.write(
+      `[duo] tmux capture failed for ${processRecord.tmuxSession}: ${detail}\n`
+    );
+    const failedState = appendEvent(
+      markProcess(state, processId, "failed"),
+      "tmux_capture_failed",
+      `tmux capture-pane failed for ${processRecord.tmuxSession}: ${detail}`,
+      processId
+    );
+    return {
+      state: failedState,
+      output: `[tmux capture failed: ${detail}]`
+    };
   }
 
   const updated = {
@@ -283,11 +343,76 @@ export function closeAllProcesses(state: DuoState, status: DuoProcess["status"] 
   for (const processId of Object.keys(next.processes)) {
     const processRecord = next.processes[processId];
     if (processRecord.status === "running" || processRecord.status === "blocked") {
-      spawnSync("tmux", ["kill-session", "-t", processRecord.tmuxSession], { encoding: "utf8" });
+      // Mirror closeProcess: when tmux kill-session fails (e.g. session
+      // already gone), write to stderr and append a tmux_close_failed event
+      // so the failure leaves a trail. Bulk-close should not be quieter
+      // than single close.
+      const result = spawnSync("tmux", ["kill-session", "-t", processRecord.tmuxSession], { encoding: "utf8" });
+      if (result.status !== 0) {
+        const detail = (result.stderr || result.stdout || "unknown tmux error").trim();
+        process.stderr.write(
+          `[duo] tmux kill-session failed for ${processRecord.tmuxSession}: ${detail}\n`
+        );
+        next = appendEvent(
+          next,
+          "tmux_close_failed",
+          `tmux kill-session failed for ${processRecord.tmuxSession}: ${detail}`,
+          processId
+        );
+      }
       next = markProcess(next, processId, status);
     }
   }
   return next;
+}
+
+/**
+ * Reconcile state with the actual tmux session lifecycle. Any process marked
+ * running/blocked whose tmux session has gone away is downgraded to closed
+ * with a tmux_session_vanished event. Without this, a child that exits on
+ * its own (codex completing, agent crashing, user killing the session) would
+ * stay "running" in state.json until idle timeout — long enough that watch
+ * shows "[tmux session unavailable]" while status=running, and that
+ * applyRuntimeLimits keeps reasoning about a ghost as if it were live.
+ *
+ * Called from applyRuntimeLimits (so every MCP tool that goes through
+ * withLockedState gets a fresh view) and from the watch loop (so the
+ * human-facing view never stales beyond one frame).
+ */
+export function reconcileTmuxLifecycle(state: DuoState): DuoState {
+  let next = state;
+  for (const processRecord of Object.values(state.processes)) {
+    if (processRecord.status !== "running" && processRecord.status !== "blocked") {
+      continue;
+    }
+    const probe = spawnSync("tmux", ["has-session", "-t", processRecord.tmuxSession], {
+      encoding: "utf8"
+    });
+    if (probe.status === 0) {
+      continue;
+    }
+    process.stderr.write(
+      `[duo] tmux session ${processRecord.tmuxSession} vanished; marking ${processRecord.id} closed\n`
+    );
+    next = appendEvent(
+      markProcess(next, processRecord.id, "closed"),
+      "tmux_session_vanished",
+      `tmux session ${processRecord.tmuxSession} no longer exists; marked ${processRecord.id} closed`,
+      processRecord.id
+    );
+  }
+  return next;
+}
+
+/**
+ * Combine reconcileTmuxLifecycle + applyRuntimeLimits in the order required
+ * for MCP-driven entry points (any path that may run after a child silently
+ * died on its own). This lives outside applyRuntimeLimits proper so unit
+ * tests that synthesize fake processes can keep reasoning about idleness
+ * without needing real tmux sessions on PATH.
+ */
+export function applyRuntimeLimitsWithReconcile(state: DuoState): DuoState {
+  return applyRuntimeLimits(reconcileTmuxLifecycle(state));
 }
 
 export function applyRuntimeLimits(state: DuoState): DuoState {

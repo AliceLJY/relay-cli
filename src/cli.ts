@@ -16,6 +16,7 @@ import {
 import {
   applyRuntimeLimits,
   closeProcess,
+  reconcileTmuxLifecycle,
   stabilizeProcess,
   spawnAgent
 } from "./runtime.js";
@@ -76,7 +77,13 @@ program
   .description("List active parent agents.")
   .action(() => {
     const root = projectRoot();
-    const state = readState(root);
+    // Reconcile before reading so a parent whose tmux session vanished
+    // (codex exited, user killed it, etc.) is downgraded to closed and
+    // disappears from the active list — otherwise we'd advertise ghosts.
+    const state = withLockedState(root, (current) => {
+      const reconciled = reconcileTmuxLifecycle(current);
+      return { state: reconciled, result: reconciled };
+    });
     printProcessList(state);
   });
 
@@ -258,6 +265,14 @@ async function runWatchLoop(root: string): Promise<void> {
   const recentWindowMs = 120 * 1000;
 
   do {
+    // Reconcile state with the actual tmux session lifecycle before each
+    // render so a child that exited between frames doesn't show as running
+    // with [tmux session unavailable]. This persists the reconciled state
+    // back to disk so the next applyRuntimeLimits / MCP read sees the truth.
+    withLockedState(root, (current) => ({
+      state: reconcileTmuxLifecycle(current),
+      result: undefined
+    }));
     const snapshot = readWatchSnapshot(root, {
       lines,
       recentWindowMs

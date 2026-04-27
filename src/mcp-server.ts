@@ -7,13 +7,15 @@ import {
   answerLatestHumanRequest,
   clearBrake,
   readState,
+  recordFailure,
   setBrake,
   withLockedState,
   writeState,
   projectRootFrom
 } from "./state.js";
+import type { DuoProcess, DuoState } from "./types.js";
 import {
-  applyRuntimeLimits,
+  applyRuntimeLimitsWithReconcile,
   cancelAgent,
   closeProcess,
   getOutput,
@@ -49,17 +51,18 @@ export async function startMcpServer(projectRoot = projectRootFrom()): Promise<v
 
   server.tool(
     "spawn_agent",
-    "Spawn a Codex or Claude child agent in a tmux-backed PTY. Requires parentId or DUO_PROCESS_ID.",
+    "Spawn a Codex or Claude child agent in a tmux-backed PTY. Requires parentId or DUO_PROCESS_ID. Set bypassSandbox=true (codex only) to launch the interactive codex with --dangerously-bypass-approvals-and-sandbox so the parent can keep talking to it without per-action approval.",
     {
       runtime: z.enum(["codex", "claude"]),
       name: z.string().optional(),
       prompt: z.string().optional(),
       parentId: z.string().optional(),
+      bypassSandbox: z.boolean().optional(),
       waitMs: z.number().int().min(0).max(10000).optional()
     },
     async (input) => {
-      const result = withLockedState(projectRoot, (current) => {
-        const state = applyRuntimeLimits(current);
+      const result = runMcpTool<DuoProcess>(projectRoot, (current) => {
+        const state = applyRuntimeLimitsWithReconcile(current);
         const parentId = resolveParentId(state, {
           explicit: input.parentId,
           envFallback: true,
@@ -70,11 +73,14 @@ export async function startMcpServer(projectRoot = projectRootFrom()): Promise<v
           name: input.name,
           prompt: input.prompt,
           parentId,
-          cwd: projectRoot
+          cwd: projectRoot,
+          bypassSandbox: input.bypassSandbox
         });
         return { state: spawned.state, result: spawned.process };
       });
-      stabilizeProcess(result, input.waitMs || 0);
+      if (!("error" in result)) {
+        stabilizeProcess(result, input.waitMs || 0);
+      }
       return textResult(result);
     }
   );
@@ -87,14 +93,14 @@ export async function startMcpServer(projectRoot = projectRootFrom()): Promise<v
       input: z.string()
     },
     async (input) => {
-      withLockedState(projectRoot, (current) => {
-        const state = applyRuntimeLimits(current);
+      const result = runMcpTool<{ ok: true; processId: string }>(projectRoot, (current) => {
+        const state = applyRuntimeLimitsWithReconcile(current);
         return {
           state: sendInput(state, input.processId, input.input),
-          result: undefined
+          result: { ok: true, processId: input.processId }
         };
       });
-      return textResult({ ok: true, processId: input.processId });
+      return textResult(result);
     }
   );
 
@@ -106,20 +112,43 @@ export async function startMcpServer(projectRoot = projectRootFrom()): Promise<v
       lines: z.number().int().min(1).max(500).optional()
     },
     async (input) => {
-      const result = withLockedState(projectRoot, (state) => {
-        const next = getOutput(state, input.processId, input.lines || 80);
-        return { state: next.state, result: next.output };
-      });
-      return textResult({ processId: input.processId, output: result });
+      const result = runMcpTool<{ processId: string; output: string; status?: string }>(
+        projectRoot,
+        (current) => {
+          const reconciled = applyRuntimeLimitsWithReconcile(current);
+          const target = reconciled.processes[input.processId];
+          // After reconcile a vanished session is already marked closed; don't
+          // let getOutput's tmux capture failure overwrite that with "failed".
+          if (!target) {
+            throw new Error(`unknown process: ${input.processId}`);
+          }
+          if (target.status !== "running" && target.status !== "blocked") {
+            return {
+              state: reconciled,
+              result: {
+                processId: input.processId,
+                status: target.status,
+                output: `[process is ${target.status}; tmux session no longer captured]`
+              }
+            };
+          }
+          const next = getOutput(reconciled, input.processId, input.lines || 80);
+          return {
+            state: next.state,
+            result: { processId: input.processId, output: next.output }
+          };
+        }
+      );
+      return textResult(result);
     }
   );
 
   server.tool("get_status", "Return current duo status, processes, and pending human requests.", {}, async () => {
-    const state = withLockedState(projectRoot, (current) => {
-      const next = applyRuntimeLimits(current);
+    const result = runMcpTool<DuoState>(projectRoot, (current) => {
+      const next = applyRuntimeLimitsWithReconcile(current);
       return { state: next, result: next };
     });
-    return textResult(state);
+    return textResult(result);
   });
 
   server.tool(
@@ -129,11 +158,29 @@ export async function startMcpServer(projectRoot = projectRootFrom()): Promise<v
       processId: z.string()
     },
     async (input) => {
-      withLockedState(projectRoot, (state) => ({
-        state: cancelAgent(state, input.processId),
-        result: undefined
-      }));
-      return textResult({ ok: true, processId: input.processId });
+      const result = runMcpTool<{ ok: true; processId: string; status?: string }>(
+        projectRoot,
+        (current) => {
+          const reconciled = applyRuntimeLimitsWithReconcile(current);
+          const target = reconciled.processes[input.processId];
+          if (!target) {
+            throw new Error(`unknown process: ${input.processId}`);
+          }
+          // If reconcile already marked the process closed (tmux session was
+          // gone), don't overwrite that terminal state with "cancelled".
+          if (target.status !== "running" && target.status !== "blocked") {
+            return {
+              state: reconciled,
+              result: { ok: true, processId: input.processId, status: target.status }
+            };
+          }
+          return {
+            state: cancelAgent(reconciled, input.processId),
+            result: { ok: true, processId: input.processId }
+          };
+        }
+      );
+      return textResult(result);
     }
   );
 
@@ -144,11 +191,30 @@ export async function startMcpServer(projectRoot = projectRootFrom()): Promise<v
       processId: z.string()
     },
     async (input) => {
-      withLockedState(projectRoot, (state) => ({
-        state: closeProcess(state, input.processId),
-        result: undefined
-      }));
-      return textResult({ ok: true, processId: input.processId });
+      const result = runMcpTool<{ ok: true; processId: string; status?: string }>(
+        projectRoot,
+        (current) => {
+          const reconciled = applyRuntimeLimitsWithReconcile(current);
+          const target = reconciled.processes[input.processId];
+          if (!target) {
+            throw new Error(`unknown process: ${input.processId}`);
+          }
+          // Already in a terminal state (e.g. reconcile downgraded a vanished
+          // session to closed). No-op rather than re-running tmux kill-session
+          // and emitting a confusing tmux_close_failed event for an absent pane.
+          if (target.status !== "running" && target.status !== "blocked") {
+            return {
+              state: reconciled,
+              result: { ok: true, processId: input.processId, status: target.status }
+            };
+          }
+          return {
+            state: closeProcess(reconciled, input.processId),
+            result: { ok: true, processId: input.processId }
+          };
+        }
+      );
+      return textResult(result);
     }
   );
 
@@ -181,6 +247,40 @@ export async function startMcpServer(projectRoot = projectRootFrom()): Promise<v
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+}
+
+/**
+ * Wrap a withLockedState body so any thrown error funnels through
+ * recordFailure (= the failure budget that triggers a brake at the limit).
+ * Without this wrapper, MCP tool failures would bypass the safety counter
+ * advertised in the README ("three recorded tool failures trigger a brake").
+ *
+ * Errors are not re-thrown — they are surfaced as a structured payload
+ * (`{ error, failureCount, brake }`) so the caller can render via
+ * textResult and the MCP client sees both what failed and how close we are
+ * to braking. State is always written: either the successful next state, or
+ * the recordFailure-augmented state with the failure logged.
+ */
+function runMcpTool<TPayload>(
+  projectRoot: string,
+  fn: (state: DuoState) => { state: DuoState; result: TPayload }
+): TPayload | { error: string; failureCount: number; brake: DuoState["brake"] } {
+  return withLockedState(projectRoot, (current) => {
+    try {
+      return fn(current);
+    } catch (error) {
+      const message = (error as Error).message;
+      const failed = recordFailure(current, message);
+      return {
+        state: failed,
+        result: {
+          error: message,
+          failureCount: failed.failureCount,
+          brake: failed.brake
+        } as TPayload
+      };
+    }
+  });
 }
 
 function textResult(value: unknown) {

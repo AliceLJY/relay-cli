@@ -13,6 +13,7 @@ import {
   parseClaudeAuthStatus,
   previewInputForEvent,
   getOutput,
+  reconcileTmuxLifecycle,
   resolveCommand,
   resolveParentId,
   sendInput,
@@ -196,7 +197,10 @@ test("spawnAgent injects bypassSandbox flags for codex when requested", () => {
     });
 
     const shellCommand = lastTmuxArg(tmuxArgsFile);
-    assert.match(shellCommand, /(?:^|\/)codex exec --dangerously-bypass-approvals-and-sandbox /);
+    assert.match(shellCommand, /(?:^|\/)codex --dangerously-bypass-approvals-and-sandbox /);
+    // Must stay in interactive TUI; codex exec is one-shot and would tear
+    // down the tmux pane, breaking duo's continuous-conversation contract.
+    assert.doesNotMatch(shellCommand, /\bcodex exec\b/);
   } finally {
     process.env.PATH = previousPath;
     if (previousCodexCmd === undefined) {
@@ -524,4 +528,178 @@ test("applyRuntimeLimits brakes an idle process when no child and no pending hum
   assert.equal(result.brake?.active, true);
   assert.match(result.brake?.reason || "", /process timeout: proc_alone/);
   assert.equal(result.processes["proc_alone"].status, "blocked");
+});
+
+test("spawnAgent refuses bypassSandbox when DUO_CODEX_CMD reintroduces the exec subcommand", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-codex-exec-guard-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  writeExecutable(join(binDir, "tmux"), "#!/usr/bin/env sh\nexit 0\n");
+  writeExecutable(join(binDir, "codex"), "#!/usr/bin/env sh\nexit 0\n");
+
+  const previousPath = process.env.PATH || "";
+  const previousCodexCmd = process.env.DUO_CODEX_CMD;
+  process.env.PATH = `${binDir}:${previousPath}`;
+  process.env.DUO_CODEX_CMD = "codex exec";
+
+  try {
+    const state = defaultState(root);
+    assert.throws(
+      () =>
+        spawnAgent(state, {
+          runtime: "codex",
+          cwd: root,
+          bypassSandbox: true
+        }),
+      /must not include the "exec" subcommand/
+    );
+  } finally {
+    process.env.PATH = previousPath;
+    if (previousCodexCmd === undefined) {
+      delete process.env.DUO_CODEX_CMD;
+    } else {
+      process.env.DUO_CODEX_CMD = previousCodexCmd;
+    }
+  }
+});
+
+test("reconcileTmuxLifecycle closes processes whose tmux session vanished", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-reconcile-vanished-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  // tmux has-session exits 1 when the session is gone; emulate that for all calls.
+  writeExecutable(join(binDir, "tmux"), "#!/usr/bin/env sh\nexit 1\n");
+  const previousPath = process.env.PATH || "";
+  process.env.PATH = `${binDir}:${previousPath}`;
+  try {
+    const state = defaultState(root);
+    state.processes["proc_running"] = makeIdleProcess("proc_running", { status: "running" });
+    state.processes["proc_blocked"] = makeIdleProcess("proc_blocked", { status: "blocked" });
+    state.processes["proc_closed"] = makeIdleProcess("proc_closed", { status: "closed" });
+
+    const next = reconcileTmuxLifecycle(state);
+    assert.equal(next.processes["proc_running"].status, "closed");
+    assert.equal(next.processes["proc_blocked"].status, "closed");
+    // Already-closed processes should not be re-probed or re-marked.
+    assert.equal(next.processes["proc_closed"].status, "closed");
+    const vanished = next.events.filter((event) => event.type === "tmux_session_vanished");
+    assert.equal(vanished.length, 2);
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+test("reconcileTmuxLifecycle leaves running processes alone when their tmux session is alive", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-reconcile-alive-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  // tmux has-session exits 0 → session exists; reconcile must not mutate.
+  writeExecutable(join(binDir, "tmux"), "#!/usr/bin/env sh\nexit 0\n");
+  const previousPath = process.env.PATH || "";
+  process.env.PATH = `${binDir}:${previousPath}`;
+  try {
+    const state = defaultState(root);
+    state.processes["proc_alive"] = makeIdleProcess("proc_alive", { status: "running" });
+
+    const next = reconcileTmuxLifecycle(state);
+    assert.equal(next.processes["proc_alive"].status, "running");
+    assert.equal(
+      next.events.filter((event) => event.type === "tmux_session_vanished").length,
+      0
+    );
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+test("sendInput marks process failed and appends event when tmux send-keys fails", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-sendinput-tmux-fail-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  writeExecutable(join(binDir, "tmux"), "#!/usr/bin/env sh\nprintf 'no such session' >&2\nexit 1\n");
+  const previousPath = process.env.PATH || "";
+  process.env.PATH = `${binDir}:${previousPath}`;
+  try {
+    const state = defaultState(root);
+    state.processes["proc_dead"] = makeIdleProcess("proc_dead", { status: "running" });
+
+    const next = sendInput(state, "proc_dead", "hello");
+    assert.equal(next.processes["proc_dead"].status, "failed");
+    assert.ok(
+      next.events.some((event) => event.type === "tmux_send_failed"),
+      "expected tmux_send_failed event"
+    );
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+test("closeAllProcesses records an event when tmux kill-session fails for one of the processes", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-closeall-tmux-fail-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  writeExecutable(join(binDir, "tmux"), "#!/usr/bin/env sh\nprintf 'no such session' >&2\nexit 1\n");
+  const previousPath = process.env.PATH || "";
+  process.env.PATH = `${binDir}:${previousPath}`;
+  try {
+    const state = defaultState(root);
+    state.processes["proc_a"] = makeIdleProcess("proc_a", { status: "running" });
+    state.processes["proc_b"] = makeIdleProcess("proc_b", { status: "blocked" });
+
+    const next = closeAllProcesses(state);
+    assert.equal(next.processes["proc_a"].status, "aborted");
+    assert.equal(next.processes["proc_b"].status, "aborted");
+    const failedEvents = next.events.filter((event) => event.type === "tmux_close_failed");
+    assert.equal(failedEvents.length, 2, "expected one tmux_close_failed event per process");
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+test("getOutput persists failed status when tmux capture fails", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-getoutput-tmux-fail-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  writeExecutable(join(binDir, "tmux"), "#!/usr/bin/env sh\nprintf 'no such session' >&2\nexit 1\n");
+  const previousPath = process.env.PATH || "";
+  process.env.PATH = `${binDir}:${previousPath}`;
+  try {
+    const state = defaultState(root);
+    state.processes["proc_dead"] = makeIdleProcess("proc_dead", { status: "running" });
+
+    const result = getOutput(state, "proc_dead", 80);
+    assert.equal(result.state.processes["proc_dead"].status, "failed");
+    assert.match(result.output, /\[tmux capture failed: /);
+    assert.ok(
+      result.state.events.some((event) => event.type === "tmux_capture_failed"),
+      "expected tmux_capture_failed event to be appended"
+    );
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+test("spawnAgent rejects an unknown parentId so direct callers cannot create fake roots", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-spawn-unknown-parent-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  writeExecutable(join(binDir, "tmux"), "#!/usr/bin/env sh\nexit 0\n");
+  writeExecutable(join(binDir, "codex"), "#!/usr/bin/env sh\nexit 0\n");
+
+  const previousPath = process.env.PATH || "";
+  process.env.PATH = `${binDir}:${previousPath}`;
+  try {
+    const state = defaultState(root);
+    assert.throws(
+      () =>
+        spawnAgent(state, {
+          runtime: "codex",
+          cwd: root,
+          parentId: "proc_does_not_exist"
+        }),
+      /unknown parentId: proc_does_not_exist/
+    );
+  } finally {
+    process.env.PATH = previousPath;
+  }
 });

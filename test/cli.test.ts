@@ -68,6 +68,12 @@ test("duo list shows active parent agents only", () => {
   const root = mkdtempSync(join(tmpdir(), "duo-cli-list-"));
   const duoDir = join(root, ".duo");
   mkdirSync(duoDir);
+  // Stub tmux has-session=success so reconcileTmuxLifecycle does not
+  // downgrade the synthetic running parents to closed.
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  writeFileSync(join(binDir, "tmux"), "#!/usr/bin/env sh\nexit 0\n", "utf8");
+  chmodSync(join(binDir, "tmux"), 0o755);
   writeState(root, {
     proc_active_parent: {
       id: "proc_active_parent",
@@ -110,6 +116,7 @@ test("duo list shows active parent agents only", () => {
 
   const stdout = execFileSync(process.execPath, [CLI_PATH, "-C", root, "list"], {
     cwd: root,
+    env: { ...process.env, PATH: `${binDir}:${process.env.PATH || ""}` },
     encoding: "utf8"
   });
 
@@ -119,9 +126,50 @@ test("duo list shows active parent agents only", () => {
   assert.doesNotMatch(stdout, /proc_closed_parent/);
 });
 
+test("duo list reconciles vanished tmux sessions before printing", () => {
+  // Companion to the previous test: when has-session reports the tmux
+  // sessions are gone, reconcile downgrades the parents to closed and the
+  // active list reports nothing.
+  const root = mkdtempSync(join(tmpdir(), "duo-cli-list-vanished-"));
+  const duoDir = join(root, ".duo");
+  mkdirSync(duoDir);
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  writeFileSync(join(binDir, "tmux"), "#!/usr/bin/env sh\nexit 1\n", "utf8");
+  chmodSync(join(binDir, "tmux"), 0o755);
+  writeState(root, {
+    proc_ghost: {
+      id: "proc_ghost",
+      runtime: "codex",
+      name: "ghost-parent",
+      status: "running",
+      depth: 1,
+      tmuxSession: "ghost",
+      cwd: root,
+      createdAt: "2026-04-24T00:00:00.000Z",
+      updatedAt: "2026-04-24T00:00:00.000Z",
+      failureCount: 0
+    }
+  });
+
+  const stdout = execFileSync(process.execPath, [CLI_PATH, "-C", root, "list"], {
+    cwd: root,
+    env: { ...process.env, PATH: `${binDir}:${process.env.PATH || ""}` },
+    encoding: "utf8"
+  });
+
+  assert.match(stdout, /no active parent agents/);
+});
+
 test("explicit -C ignores inherited DUO_DIR", () => {
   const root = mkdtempSync(join(tmpdir(), "duo-cli-cwd-"));
   const inherited = mkdtempSync(join(tmpdir(), "duo-cli-inherited-dir-"));
+  // Stub tmux has-session=success so reconcileTmuxLifecycle inside `duo
+  // list` does not downgrade the synthetic running parent to closed.
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  writeFileSync(join(binDir, "tmux"), "#!/usr/bin/env sh\nexit 0\n", "utf8");
+  chmodSync(join(binDir, "tmux"), 0o755);
 
   writeState(root, {
     proc_active_parent: {
@@ -143,7 +191,8 @@ test("explicit -C ignores inherited DUO_DIR", () => {
     cwd: root,
     env: {
       ...process.env,
-      DUO_DIR: join(inherited, ".duo")
+      DUO_DIR: join(inherited, ".duo"),
+      PATH: `${binDir}:${process.env.PATH || ""}`
     },
     encoding: "utf8"
   });
