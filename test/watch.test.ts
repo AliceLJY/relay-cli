@@ -77,6 +77,64 @@ test("renderWatchFrameWithLayout supports columns", () => {
   assert.match(frame, /RIGHT/);
 });
 
+test("renderWatchFrameWithLayout uses compact labels in columns", () => {
+  const state = defaultState("/tmp/duo-watch");
+  state.processes.proc_parent = {
+    id: "proc_parent",
+    runtime: "claude",
+    name: "parent",
+    status: "running",
+    depth: 1,
+    tmuxSession: "parent",
+    cwd: "/tmp/duo-watch",
+    createdAt: "2026-04-24T00:00:00.000Z",
+    updatedAt: "2026-04-24T00:00:00.000Z",
+    failureCount: 0
+  };
+  state.processes.proc_child = {
+    id: "proc_child",
+    runtime: "codex",
+    name: "child",
+    status: "running",
+    parentId: "proc_parent",
+    depth: 2,
+    tmuxSession: "child",
+    cwd: "/tmp/duo-watch",
+    createdAt: "2026-04-24T00:00:01.000Z",
+    updatedAt: "2026-04-24T00:00:01.000Z",
+    failureCount: 0
+  };
+  state.processes.proc_recent = {
+    id: "proc_recent",
+    runtime: "claude",
+    name: "recent",
+    status: "closed",
+    parentId: "proc_parent",
+    depth: 2,
+    tmuxSession: "recent",
+    cwd: "/tmp/duo-watch",
+    createdAt: "2026-04-24T00:00:01.000Z",
+    updatedAt: "2026-04-24T00:01:00.000Z",
+    failureCount: 0
+  };
+
+  const frame = renderWatchFrameWithLayout(
+    {
+      state,
+      capturedAt: "2026-04-24T00:01:30.000Z",
+      recentWindowMs: 60_000,
+      processes: [
+        { process: state.processes.proc_child, output: "CHILD" },
+        { process: state.processes.proc_recent, output: "DONE" }
+      ]
+    },
+    { layout: "columns", terminalWidth: 120 }
+  );
+
+  assert.match(frame, /child\(parent\)> recent \| proc_recent \| closed 30s/);
+  assert.doesNotMatch(frame, /kept for review/);
+});
+
 test("renderWatchFrameWithLayout shows parent-child hierarchy in stack mode even when columns are requested", () => {
   const state = defaultState("/tmp/duo-watch");
   state.processes.proc_parent = {
@@ -205,7 +263,7 @@ test("renderWatchFrameWithLayout labels orphan children when parent is not visib
     { layout: "columns", terminalWidth: 120 }
   );
 
-  assert.match(frame, /orphan\(proc_missing\)> orphan child \| proc_orphan/);
+  assert.match(frame, /orphan\(missing\)> orphan child \| proc_orphan/);
   assert.match(frame, /root> separate root \| proc_root/);
 });
 

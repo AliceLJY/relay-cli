@@ -126,7 +126,9 @@ function renderColumnsFrame(snapshot: WatchSnapshot, header: string, terminalWid
   const knownProcessIds = new Set(Object.keys(snapshot.state.processes));
 
   const columns = selected.map(({ process, output }) => {
-    const title = describeProcessForWatch(process, visibleProcessIds, knownProcessIds, snapshot);
+    const title = describeProcessForWatch(process, visibleProcessIds, knownProcessIds, snapshot, {
+      compact: true
+    });
     const body = (output.trim() || "[no captured output yet]").split("\n");
     return fitBlock([title, "-".repeat(Math.max(10, columnWidth - 2)), ...body], columnWidth);
   });
@@ -160,10 +162,25 @@ function fitBlock(lines: string[], width: number): string[] {
       output.push("".padEnd(width, " "));
       continue;
     }
-    for (let index = 0; index < normalized.length; index += width) {
-      output.push(normalized.slice(index, index + width).padEnd(width, " "));
+    for (const segment of wrapLine(normalized, width)) {
+      output.push(segment.padEnd(width, " "));
     }
   }
+  return output;
+}
+
+function wrapLine(line: string, width: number): string[] {
+  const output: string[] = [];
+  let rest = line;
+  while (rest.length > width) {
+    let breakAt = rest.lastIndexOf(" ", width);
+    if (breakAt <= 0) {
+      breakAt = width;
+    }
+    output.push(rest.slice(0, breakAt));
+    rest = rest.slice(breakAt).trimStart();
+  }
+  output.push(rest);
   return output;
 }
 
@@ -223,10 +240,16 @@ function describeProcessForWatch(
   processRecord: DuoProcess,
   visibleProcessIds: Set<string>,
   knownProcessIds: Set<string>,
-  snapshot: WatchSnapshot
+  snapshot: WatchSnapshot,
+  options: { compact?: boolean } = {}
 ): string {
+  if (options.compact) {
+    const relation = describeProcessRelation(processRecord, visibleProcessIds, knownProcessIds, options);
+    return `${relation} ${processRecord.name} | ${processRecord.id} | ${describeCompactStatus(processRecord, snapshot)}`;
+  }
+
   const indent = "  ".repeat(Math.max(0, processRecord.depth - 1));
-  const relation = describeProcessRelation(processRecord, visibleProcessIds, knownProcessIds);
+  const relation = describeProcessRelation(processRecord, visibleProcessIds, knownProcessIds, options);
   const reviewNote = describeReviewRetention(processRecord, snapshot);
   return `${indent}${relation} ${processRecord.name} | ${processRecord.id} | ${processRecord.runtime} | ${processRecord.status}${reviewNote} | depth=${processRecord.depth}`;
 }
@@ -234,15 +257,39 @@ function describeProcessForWatch(
 function describeProcessRelation(
   processRecord: DuoProcess,
   visibleProcessIds: Set<string>,
-  knownProcessIds: Set<string>
+  knownProcessIds: Set<string>,
+  options: { compact?: boolean } = {}
 ): string {
   if (!processRecord.parentId) {
     return "root>";
   }
   if (visibleProcessIds.has(processRecord.parentId) || knownProcessIds.has(processRecord.parentId)) {
-    return `child(${processRecord.parentId})>`;
+    const parentRef = options.compact ? compactProcessRef(processRecord.parentId) : processRecord.parentId;
+    return `child(${parentRef})>`;
   }
-  return `orphan(${processRecord.parentId})>`;
+  const parentRef = options.compact ? compactProcessRef(processRecord.parentId) : processRecord.parentId;
+  return `orphan(${parentRef})>`;
+}
+
+function compactProcessRef(processId: string): string {
+  const withoutPrefix = processId.startsWith("proc_") ? processId.slice(5) : processId;
+  return withoutPrefix.length > 8 ? withoutPrefix.slice(0, 8) : withoutPrefix;
+}
+
+function describeCompactStatus(processRecord: DuoProcess, snapshot: WatchSnapshot): string {
+  if (processRecord.status === "running" || processRecord.status === "blocked") {
+    return processRecord.status;
+  }
+  const updatedAt = Date.parse(processRecord.updatedAt);
+  const capturedAt = Date.parse(snapshot.capturedAt);
+  if (!Number.isFinite(updatedAt) || !Number.isFinite(capturedAt)) {
+    return processRecord.status;
+  }
+  const ageMs = Math.max(0, capturedAt - updatedAt);
+  if (ageMs > resolveRecentWindowMs(snapshot)) {
+    return processRecord.status;
+  }
+  return `${processRecord.status} ${Math.round(ageMs / 1000)}s`;
 }
 
 function byCreatedAt(left: DuoProcess, right: DuoProcess): number {
