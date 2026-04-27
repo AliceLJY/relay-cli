@@ -164,7 +164,20 @@ program.parseAsync(process.argv).catch((error: unknown) => {
 });
 
 function projectRoot(): string {
+  if (hasExplicitCwdArg(process.argv.slice(2))) {
+    delete process.env.DUO_DIR;
+  }
   return projectRootFrom(program.opts<{ cwd: string }>().cwd);
+}
+
+function hasExplicitCwdArg(argv: string[]): boolean {
+  return argv.some(
+    (arg) =>
+      arg === "-C" ||
+      arg === "--cwd" ||
+      arg.startsWith("--cwd=") ||
+      (arg.startsWith("-C") && arg.length > 2)
+  );
 }
 
 function printProcessList(state: ReturnType<typeof readState>): void {

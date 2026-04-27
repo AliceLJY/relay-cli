@@ -1,4 +1,5 @@
 import test from "node:test";
+import "./test-env.js";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";

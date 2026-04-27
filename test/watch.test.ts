@@ -1,4 +1,5 @@
 import test from "node:test";
+import "./test-env.js";
 import assert from "node:assert/strict";
 import { defaultState } from "../src/state.js";
 import { renderWatchFrame, renderWatchFrameWithLayout, shouldShowInWatch } from "../src/watch.js";

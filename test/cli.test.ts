@@ -1,4 +1,5 @@
 import test from "node:test";
+import "./test-env.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -116,6 +117,39 @@ test("duo list shows active parent agents only", () => {
   assert.match(stdout, /parent-codex/);
   assert.doesNotMatch(stdout, /proc_child/);
   assert.doesNotMatch(stdout, /proc_closed_parent/);
+});
+
+test("explicit -C ignores inherited DUO_DIR", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-cli-cwd-"));
+  const inherited = mkdtempSync(join(tmpdir(), "duo-cli-inherited-dir-"));
+
+  writeState(root, {
+    proc_active_parent: {
+      id: "proc_active_parent",
+      runtime: "codex",
+      name: "parent-codex",
+      status: "running",
+      depth: 1,
+      tmuxSession: "active",
+      cwd: root,
+      createdAt: "2026-04-24T00:00:00.000Z",
+      updatedAt: "2026-04-24T00:00:00.000Z",
+      failureCount: 0
+    }
+  });
+  writeState(inherited, {});
+
+  const stdout = execFileSync(process.execPath, [CLI_PATH, "-C", root, "list"], {
+    cwd: root,
+    env: {
+      ...process.env,
+      DUO_DIR: join(inherited, ".duo")
+    },
+    encoding: "utf8"
+  });
+
+  assert.match(stdout, /proc_active_parent/);
+  assert.match(stdout, /parent-codex/);
 });
 
 test("duo start --parent spawns one chosen parent and attaches", () => {
