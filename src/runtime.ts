@@ -7,6 +7,7 @@ import type { DuoProcess, DuoState, RuntimeHealth, RuntimeInfo, RuntimeName } fr
 import {
   appendEvent,
   assertNotBraked,
+  duoDir,
   maybeDowngradeBrake,
   recordFailure,
   resolveIdleTimeoutMs,
@@ -118,6 +119,8 @@ export function spawnAgent(state: DuoState, input: SpawnAgentInput): { state: Du
       `DUO_RUNTIME=${input.runtime}`,
       "-e",
       `DUO_DEPTH=${depth}`,
+      "-e",
+      `DUO_DIR=${duoDir(state.projectRoot)}`,
       shellCommand
     ],
     {
