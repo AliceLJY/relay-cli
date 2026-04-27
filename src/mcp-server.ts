@@ -49,7 +49,7 @@ export async function startMcpServer(projectRoot = projectRootFrom()): Promise<v
 
   server.tool(
     "spawn_agent",
-    "Spawn a Codex or Claude child agent in a tmux-backed PTY.",
+    "Spawn a Codex or Claude child agent in a tmux-backed PTY. Requires parentId or DUO_PROCESS_ID.",
     {
       runtime: z.enum(["codex", "claude"]),
       name: z.string().optional(),
@@ -62,7 +62,8 @@ export async function startMcpServer(projectRoot = projectRootFrom()): Promise<v
         const state = applyRuntimeLimits(current);
         const parentId = resolveParentId(state, {
           explicit: input.parentId,
-          envFallback: true
+          envFallback: true,
+          requireParent: true
         });
         const spawned = spawnAgent(state, {
           runtime: input.runtime as RuntimeName,

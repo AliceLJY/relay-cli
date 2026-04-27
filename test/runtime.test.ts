@@ -9,8 +9,10 @@ import {
   applyRuntimeLimits,
   cancelAgent,
   closeProcess,
+  closeAllProcesses,
   parseClaudeAuthStatus,
   previewInputForEvent,
+  getOutput,
   resolveCommand,
   resolveParentId,
   sendInput,
@@ -171,6 +173,159 @@ test("spawnAgent gives scoped child agents child-only guidance", () => {
   }
 });
 
+test("spawnAgent injects bypassSandbox flags for codex when requested", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-spawn-codex-bypass-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  const tmuxArgsFile = join(root, "tmux-args.txt");
+  writeExecutable(join(binDir, "tmux"), `#!/usr/bin/env sh\nprintf '%s\n' "$@" > "${tmuxArgsFile}"\nexit 0\n`);
+  writeExecutable(join(binDir, "codex"), "#!/usr/bin/env sh\nexit 0\n");
+
+  const previousPath = process.env.PATH || "";
+  const previousCodexCmd = process.env.DUO_CODEX_CMD;
+  process.env.PATH = `${binDir}:${previousPath}`;
+  delete process.env.DUO_CODEX_CMD;
+
+  try {
+    const state = defaultState(root);
+    spawnAgent(state, {
+      runtime: "codex",
+      prompt: "write files",
+      cwd: root,
+      bypassSandbox: true
+    });
+
+    const shellCommand = lastTmuxArg(tmuxArgsFile);
+    assert.match(shellCommand, /(?:^|\/)codex exec --dangerously-bypass-approvals-and-sandbox /);
+  } finally {
+    process.env.PATH = previousPath;
+    if (previousCodexCmd === undefined) {
+      delete process.env.DUO_CODEX_CMD;
+    } else {
+      process.env.DUO_CODEX_CMD = previousCodexCmd;
+    }
+  }
+});
+
+test("spawnAgent does not inject bypassSandbox flags for codex by default", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-spawn-codex-default-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  const tmuxArgsFile = join(root, "tmux-args.txt");
+  writeExecutable(join(binDir, "tmux"), `#!/usr/bin/env sh\nprintf '%s\n' "$@" > "${tmuxArgsFile}"\nexit 0\n`);
+  writeExecutable(join(binDir, "codex"), "#!/usr/bin/env sh\nexit 0\n");
+
+  const previousPath = process.env.PATH || "";
+  const previousCodexCmd = process.env.DUO_CODEX_CMD;
+  process.env.PATH = `${binDir}:${previousPath}`;
+  delete process.env.DUO_CODEX_CMD;
+
+  try {
+    const state = defaultState(root);
+    spawnAgent(state, {
+      runtime: "codex",
+      prompt: "inspect only",
+      cwd: root
+    });
+
+    const shellCommand = lastTmuxArg(tmuxArgsFile);
+    assert.match(shellCommand, /(?:^|\/)codex /);
+    assert.doesNotMatch(shellCommand, /--dangerously-bypass-approvals-and-sandbox/);
+  } finally {
+    process.env.PATH = previousPath;
+    if (previousCodexCmd === undefined) {
+      delete process.env.DUO_CODEX_CMD;
+    } else {
+      process.env.DUO_CODEX_CMD = previousCodexCmd;
+    }
+  }
+});
+
+test("spawnAgent ignores bypassSandbox flags for claude", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-spawn-claude-bypass-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  const tmuxArgsFile = join(root, "tmux-args.txt");
+  writeExecutable(join(binDir, "tmux"), `#!/usr/bin/env sh\nprintf '%s\n' "$@" > "${tmuxArgsFile}"\nexit 0\n`);
+  writeExecutable(join(binDir, "claude"), "#!/usr/bin/env sh\nexit 0\n");
+
+  const previousPath = process.env.PATH || "";
+  const previousClaudeCmd = process.env.DUO_CLAUDE_CMD;
+  process.env.PATH = `${binDir}:${previousPath}`;
+  delete process.env.DUO_CLAUDE_CMD;
+
+  try {
+    const state = defaultState(root);
+    spawnAgent(state, {
+      runtime: "claude",
+      prompt: "inspect only",
+      cwd: root,
+      bypassSandbox: true
+    });
+
+    const shellCommand = lastTmuxArg(tmuxArgsFile);
+    assert.match(shellCommand, /(?:^|\/)claude /);
+    assert.doesNotMatch(shellCommand, /--dangerously-bypass-approvals-and-sandbox/);
+    assert.doesNotMatch(shellCommand, /\bexec\b/);
+  } finally {
+    process.env.PATH = previousPath;
+    if (previousClaudeCmd === undefined) {
+      delete process.env.DUO_CLAUDE_CMD;
+    } else {
+      process.env.DUO_CLAUDE_CMD = previousClaudeCmd;
+    }
+  }
+});
+
+test("closeAllProcesses aborts active processes only", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-close-all-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  writeExecutable(join(binDir, "tmux"), "#!/usr/bin/env sh\nexit 0\n");
+
+  const previousPath = process.env.PATH || "";
+  process.env.PATH = `${binDir}:${previousPath}`;
+
+  try {
+    const state = defaultState(root);
+    state.processes.proc_running = makeIdleProcess("proc_running", { status: "running" });
+    state.processes.proc_blocked = makeIdleProcess("proc_blocked", { status: "blocked" });
+    state.processes.proc_closed = makeIdleProcess("proc_closed", { status: "closed" });
+
+    const next = closeAllProcesses(state);
+
+    assert.equal(next.processes.proc_running.status, "aborted");
+    assert.equal(next.processes.proc_blocked.status, "aborted");
+    assert.equal(next.processes.proc_closed.status, "closed");
+    assert.equal(next.events.filter((event) => event.type === "aborted").length, 2);
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
+test("getOutput captures tmux pane output and records observation time", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-get-output-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  writeExecutable(join(binDir, "tmux"), "#!/usr/bin/env sh\nprintf 'READY\\n'\nexit 0\n");
+
+  const previousPath = process.env.PATH || "";
+  process.env.PATH = `${binDir}:${previousPath}`;
+
+  try {
+    const state = defaultState(root);
+    state.processes.proc_demo = makeIdleProcess("proc_demo", { status: "running" });
+
+    const result = getOutput(state, "proc_demo", 20);
+
+    assert.equal(result.output, "READY\n");
+    assert.ok(result.state.processes.proc_demo.lastOutputAt);
+    assert.equal(result.state.processes.proc_demo.status, "running");
+  } finally {
+    process.env.PATH = previousPath;
+  }
+});
+
 function makeIdleProcess(id: string, overrides: Partial<import("../src/types.js").DuoProcess> = {}) {
   const staleAt = new Date(Date.now() - 45 * 60 * 1000).toISOString();
   return {
@@ -187,6 +342,16 @@ function makeIdleProcess(id: string, overrides: Partial<import("../src/types.js"
     failureCount: 0,
     ...overrides
   };
+}
+
+function lastTmuxArg(path: string): string {
+  const args = readFileSync(path, "utf8").trimEnd().split("\n");
+  return args.at(-1) || "";
+}
+
+function writeExecutable(path: string, content: string): void {
+  writeFileSync(path, content, "utf8");
+  chmodSync(path, 0o755);
 }
 
 test("applyRuntimeLimits does not brake a parent while its child is still active", () => {
@@ -275,10 +440,34 @@ test("resolveParentId returns undefined when no explicit and no env fallback", (
   }
 });
 
+test("resolveParentId requires a parent when requested", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-resolve-required-none-"));
+  const state = defaultState(root);
+  const prev = process.env.DUO_PROCESS_ID;
+  delete process.env.DUO_PROCESS_ID;
+  try {
+    assert.throws(
+      () => resolveParentId(state, { envFallback: true, requireParent: true }),
+      /parentId is required/
+    );
+  } finally {
+    if (prev !== undefined) process.env.DUO_PROCESS_ID = prev;
+  }
+});
+
 test("resolveParentId falls back to orphan and warns when explicit parent is unknown", () => {
   const root = mkdtempSync(join(tmpdir(), "duo-resolve-explicit-ghost-"));
   const state = defaultState(root);
   assert.equal(resolveParentId(state, { explicit: "proc_ghost" }), undefined);
+});
+
+test("resolveParentId rejects unknown parent when required", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-resolve-required-ghost-"));
+  const state = defaultState(root);
+  assert.throws(
+    () => resolveParentId(state, { explicit: "proc_ghost", requireParent: true }),
+    /refusing to spawn as orphan/
+  );
 });
 
 test("resolveParentId returns the id when parent exists in state", () => {

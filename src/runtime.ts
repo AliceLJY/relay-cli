@@ -16,17 +16,23 @@ import {
 
 export function resolveParentId(
   state: DuoState,
-  options: { explicit?: string; envFallback?: boolean } = {}
+  options: { explicit?: string; envFallback?: boolean; requireParent?: boolean } = {}
 ): string | undefined {
   const envParent = options.envFallback ? process.env.DUO_PROCESS_ID : undefined;
   const candidate = options.explicit || envParent || undefined;
   if (!candidate) {
+    if (options.requireParent) {
+      throw new Error("parentId is required to spawn a duo child; pass parentId or run inside a duo parent with DUO_PROCESS_ID");
+    }
     return undefined;
   }
   if (state.processes[candidate]) {
     return candidate;
   }
   const source = options.explicit ? "--parent" : "DUO_PROCESS_ID";
+  if (options.requireParent) {
+    throw new Error(`${source}=${candidate} is set but not found in state; refusing to spawn as orphan`);
+  }
   process.stderr.write(
     `[duo] ${source}=${candidate} is set but not found in state; spawning as orphan.\n`
   );
