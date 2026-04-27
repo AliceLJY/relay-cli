@@ -292,11 +292,29 @@ export function applyRuntimeLimits(state: DuoState): DuoState {
     (request) => request.status === "pending"
   );
   const activeChildrenByParent = new Map<string, number>();
+  const latestChildObservationByParent = new Map<string, number>();
   for (const processRecord of Object.values(next.processes)) {
     if (!processRecord.parentId) {
       continue;
     }
-    if (processRecord.status !== "running" && processRecord.status !== "blocked") {
+    const childObservedAt = observedTimestamp(processRecord);
+    const childIsActive = processRecord.status === "running" || processRecord.status === "blocked";
+    const childIsRecent = Number.isFinite(childObservedAt) && now - childObservedAt <= idleTimeoutMs;
+    if (childIsActive || childIsRecent) {
+      const visitedParents = new Set<string>();
+      for (
+        let parentId: string | undefined = processRecord.parentId;
+        parentId && !visitedParents.has(parentId);
+        parentId = next.processes[parentId]?.parentId
+      ) {
+        visitedParents.add(parentId);
+        latestChildObservationByParent.set(
+          parentId,
+          Math.max(latestChildObservationByParent.get(parentId) || 0, childObservedAt)
+        );
+      }
+    }
+    if (!childIsActive) {
       continue;
     }
     activeChildrenByParent.set(
@@ -308,7 +326,10 @@ export function applyRuntimeLimits(state: DuoState): DuoState {
     if (processRecord.status !== "running") {
       continue;
     }
-    const observedAt = Date.parse(processRecord.lastOutputAt || processRecord.createdAt);
+    const observedAt = Math.max(
+      observedTimestamp(processRecord),
+      latestChildObservationByParent.get(processRecord.id) || 0
+    );
     if (now - observedAt <= idleTimeoutMs) {
       continue;
     }
@@ -467,6 +488,10 @@ export function previewInputForEvent(input: string, maxLength = INPUT_EVENT_PREV
   return `${collapsed.slice(0, maxLength - 3)}...`;
 }
 
+function observedTimestamp(processRecord: DuoProcess): number {
+  return Date.parse(processRecord.lastOutputAt || processRecord.updatedAt || processRecord.createdAt);
+}
+
 function defaultFallbackDirs(): string[] {
   return [join(homedir(), ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"];
 }
@@ -509,11 +534,25 @@ function buildAgentIntro(
   prompt: string
 ): string {
   const compactPrompt = prompt.replace(/\s+/g, " ").trim();
+  const roleLines =
+    processRecord.depth === 1
+      ? [
+          "You are the parent agent inside duo, a local Codex/Claude parent-child relay.",
+          "At each meaningful action checkpoint, actively duo the other runtime for a scoped review, diagnosis, or implementation slice; do not wait for Alice to mention or route another agent.",
+          "For non-trivial work, make child delegation a routine part of the loop: spawn the other runtime, read its output, and integrate the decision yourself.",
+          "Keep each child task scoped; do not hand off the entire parent task."
+        ]
+      : [
+          "You are a scoped child agent inside duo, a local Codex/Claude parent-child relay.",
+          "Do the assigned slice only, report the result back to the parent agent, and do not spawn further child agents.",
+          "Do not expand the task into a shared room workflow or take over the parent task."
+        ];
   return [
     `DUO_PROCESS_ID=${processRecord.id}.`,
     `DUO_RUNTIME=${processRecord.runtime}.`,
     `DUO_DEPTH=${processRecord.depth}.`,
-    "You are running inside duo, a local Codex/Claude relay.",
+    ...roleLines,
+    "This is not a shared chat room: do not mirror every message or build a room transcript.",
     "If duo MCP tools are configured, use them for status, spawning, output reads, and human checkpoints.",
     "Respect Alice's brake and stop when need_human is required.",
     `Task: ${compactPrompt}`

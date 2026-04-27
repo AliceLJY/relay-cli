@@ -105,6 +105,61 @@ test("spawnAgent injects duo environment into tmux new-session", () => {
     assert.match(tmuxArgs, /\n-e\nDUO_PROCESS_ID=proc_[a-z0-9]+\n/);
     assert.match(tmuxArgs, /\n-e\nDUO_RUNTIME=claude\n/);
     assert.match(tmuxArgs, /\n-e\nDUO_DEPTH=1\n/);
+    assert.match(tmuxArgs, /parent agent inside duo/);
+    assert.match(tmuxArgs, /actively duo the other runtime/);
+    assert.match(tmuxArgs, /routine part of the loop/);
+    assert.match(tmuxArgs, /do not hand off the entire parent task/);
+  } finally {
+    process.env.PATH = previousPath;
+    if (previousClaudeCmd === undefined) {
+      delete process.env.DUO_CLAUDE_CMD;
+    } else {
+      process.env.DUO_CLAUDE_CMD = previousClaudeCmd;
+    }
+  }
+});
+
+test("spawnAgent gives scoped child agents child-only guidance", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-spawn-child-agent-"));
+  const binDir = join(root, "bin");
+  mkdirSync(binDir);
+  const tmuxStub = join(binDir, "tmux");
+  const claudeStub = join(binDir, "claude");
+  const tmuxArgsFile = join(root, "tmux-args.txt");
+
+  writeFileSync(tmuxStub, `#!/usr/bin/env sh\nprintf '%s\n' "$@" > "${tmuxArgsFile}"\nexit 0\n`, "utf8");
+  writeFileSync(claudeStub, "#!/usr/bin/env sh\nexit 0\n", "utf8");
+  chmodSync(tmuxStub, 0o755);
+  chmodSync(claudeStub, 0o755);
+
+  const previousPath = process.env.PATH || "";
+  const previousClaudeCmd = process.env.DUO_CLAUDE_CMD;
+  process.env.PATH = `${binDir}:${previousPath}`;
+  delete process.env.DUO_CLAUDE_CMD;
+
+  try {
+    const state = defaultState(root);
+    state.processes.proc_parent = makeIdleProcess("proc_parent", {
+      runtime: "codex",
+      status: "running",
+      depth: 1
+    });
+
+    spawnAgent(state, {
+      runtime: "claude",
+      parentId: "proc_parent",
+      prompt: "review the runtime intro only",
+      cwd: root
+    });
+
+    const tmuxArgs = readFileSync(tmuxArgsFile, "utf8");
+    assert.match(tmuxArgs, /\n-e\nDUO_DEPTH=2\n/);
+    assert.match(tmuxArgs, /scoped child agent inside duo/);
+    assert.match(tmuxArgs, /do not spawn further child agents/);
+    assert.doesNotMatch(tmuxArgs, /parent agent inside duo/);
+    assert.doesNotMatch(tmuxArgs, /actively duo the other runtime/);
+    assert.doesNotMatch(tmuxArgs, /routine part of the loop/);
+    assert.doesNotMatch(tmuxArgs, /do not hand off the entire parent task/);
   } finally {
     process.env.PATH = previousPath;
     if (previousClaudeCmd === undefined) {
@@ -147,6 +202,45 @@ test("applyRuntimeLimits does not brake a parent while its child is still active
   const result = applyRuntimeLimits(state);
   assert.equal(result.brake?.active, undefined);
   assert.equal(result.processes["proc_parent"].status, "running");
+});
+
+test("applyRuntimeLimits treats a recently finished child as parent activity", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-recent-child-"));
+  const state = defaultState(root);
+  state.processes["proc_parent"] = makeIdleProcess("proc_parent");
+  state.processes["proc_child"] = makeIdleProcess("proc_child", {
+    parentId: "proc_parent",
+    depth: 2,
+    status: "closed",
+    lastOutputAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  const result = applyRuntimeLimits(state);
+  assert.equal(result.brake?.active, undefined);
+  assert.equal(result.processes["proc_parent"].status, "running");
+});
+
+test("applyRuntimeLimits propagates descendant activity to ancestors", () => {
+  const root = mkdtempSync(join(tmpdir(), "duo-descendant-activity-"));
+  const state = defaultState(root);
+  state.processes["proc_grandparent"] = makeIdleProcess("proc_grandparent");
+  state.processes["proc_parent"] = makeIdleProcess("proc_parent", {
+    parentId: "proc_grandparent",
+    depth: 2,
+    status: "closed"
+  });
+  state.processes["proc_child"] = makeIdleProcess("proc_child", {
+    parentId: "proc_parent",
+    depth: 3,
+    status: "running",
+    lastOutputAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  const result = applyRuntimeLimits(state);
+  assert.equal(result.brake?.active, undefined);
+  assert.equal(result.processes["proc_grandparent"].status, "running");
 });
 
 test("applyRuntimeLimits does not brake while a human request is pending", () => {

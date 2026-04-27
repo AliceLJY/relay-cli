@@ -1,58 +1,48 @@
 # relay-cli
 
-`relay-cli` is a small local control plane for letting Codex and Claude work with each other without turning the project into a chat room.
+`relay-cli` is a small local control plane for Codex/Claude delegation. It keeps the human-facing CLI intentionally narrow.
 
-The installed command is intentionally short:
+## Commands
 
 ```sh
-duo status
-duo start --parent codex "implement the next relay-cli improvement"
-duo brake "direction is drifting"
-duo resume "new direction: keep this as process orchestration, not a room"
-duo mcp
+duo start --parent claude
+duo start --parent codex
+duo list
+duo show <prefix>
 duo watch
 ```
+
+- `duo start --parent claude`: start a Claude parent agent.
+- `duo start --parent codex`: start a Codex parent agent.
+- `duo list`: show active parent agents.
+- `duo show <prefix>`: show one Claude parent agent's chat log. A short id prefix is enough when unique.
+- `duo watch`: watch child-agent panes. Root parents stay out of this view.
 
 ## Boundary
 
 This is not `agent-room-cli`.
 
 - `agent-room-cli`: human-led shared room, mention routing, transcript-first collaboration.
-- `relay-cli`: agent-led local process orchestration, with the human driver retaining an immediate brake.
+- `relay-cli`: parent-led local process orchestration. One selected parent remains responsible, and actively pulls a child agent at meaningful action checkpoints for scoped review, diagnosis, or implementation slices.
+
+The important default is: one parent owns the task, and child delegation is a routine checkpoint. Alice should not have to mention or route another agent the way a room workflow would.
 
 ## Current MVP
 
-- Runs an MCP server through `duo mcp`.
-- Exposes Codex/Claude process orchestration tools to agents.
-- Uses tmux as the first PTY backend.
+- Starts one chosen parent through `duo start --parent`.
+- Lists active parent agents through `duo list`.
+- Reads Claude parent chat logs through `duo show <prefix>`.
+- Watches spawned child agents through `duo watch`.
+- Prompts parent agents to duo the other runtime at meaningful action checkpoints, while keeping the parent responsible for integration.
+- Uses tmux as the PTY backend.
 - Stores project-local state in `.duo/state.json`.
-- Gives the operator explicit control commands: `status`, `brake`, `resume`, and `abort`.
-- Adds a parent-child startup path through `duo start --parent`.
-- Adds one-shot paired startup through `duo pair`.
-- Adds a human observer view through `duo watch`.
-- Injects `DUO_PROCESS_ID` / `DUO_RUNTIME` / `DUO_DEPTH` as real environment variables so the parent-child chain is anchored in process state, not just prompt text.
-
-## MCP tools
-
-- `whoami`
-- `list_runtimes`
-- `spawn_agent`
-- `send_input`
-- `get_output`
-- `get_status`
-- `cancel_agent`
-- `close_process`
-- `need_human`
+- Injects `DUO_PROCESS_ID` / `DUO_RUNTIME` / `DUO_DEPTH` into agent processes.
+- Keeps the MCP server as hidden plumbing for configured agents.
 
 ## Safety Model
 
-The default is autonomous Codex/Claude collaboration, not autonomous irreversible action.
-
-- `duo brake` freezes new spawn/send actions without killing current panes.
-- `duo resume` clears the brake and can answer a pending `need_human` request.
-- `need_human` is blocking: the calling agent waits for the human operator to resume with direction.
 - Spawn depth is capped at 2.
-- A process that has not produced observed output for 5 minutes causes a brake on the next status or tool check.
+- A process with no self or child activity for 30 minutes causes a brake on the next tool check.
 - Three recorded tool failures trigger a brake.
 
 ## Local Development
@@ -61,29 +51,8 @@ The default is autonomous Codex/Claude collaboration, not autonomous irreversibl
 npm install
 npm run check
 npm link
-duo status
+duo list
 ```
-
-## Recommended Start
-
-For real delegation, start one chosen parent and let that parent decide whether to spawn the other runtime:
-
-```sh
-duo start --parent codex "implement the next small relay-cli improvement"
-duo start --parent claude "critique the current relay-cli handoff design"
-```
-
-That creates one root process, attaches you to its tmux session, and keeps the second runtime out of the picture until the parent explicitly asks for help through duo MCP.
-
-## Quick Pair Start
-
-When the operator explicitly wants side-by-side fan-out instead of parent-child delegation, use:
-
-```sh
-duo pair "implement the next small relay-cli improvement"
-```
-
-That spawns one `codex` process and one `claude` process from the same task text, then drops into `duo watch` by default. This is parallel fan-out, not a parent-child flow. Use `duo pair --no-watch ...` if you only want the startup step.
 
 ## Two-Machine Setup
 
@@ -93,19 +62,7 @@ This repo was authored on a Mac mini but designed to run on a MacBook. A helper 
 npm run install:macbook
 ```
 
-It syncs the source to `mac:~/Projects/relay-cli`, installs dependencies with `npm ci`, runs checks, links `duo`, registers the `duo` MCP server for Codex, and ensures the Claude project-level `.mcp.json` exists.
-
 Runtime requirements on the machine that actually runs `duo`: both `codex` and `claude` CLI must be installed and authenticated.
-
-To expose the control plane to an agent, configure that agent with an MCP server command equivalent to:
-
-```sh
-duo mcp
-```
-
-The repo also carries a project-level [`.mcp.json`](./.mcp.json) so Claude Code can discover the `duo` MCP server inside this project.
-
-For the full operator workflow, see [docs/macbook-start-playbook.md](./docs/macbook-start-playbook.md).
 
 ## Chinese Version
 
@@ -113,8 +70,8 @@ See [README_CN.md](./README_CN.md).
 
 ## Status
 
-This is a personal experiment-grade tool. It works, it is under active shaping, and the surface may shift without deprecation notices. Use it as a reference or a starting point rather than a stable dependency.
+This is a personal experiment-grade tool. It works, it is under active shaping, and the surface may shift without deprecation notices.
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+MIT - see [LICENSE](./LICENSE).

@@ -9,6 +9,9 @@ export interface WatchSnapshot {
     output: string;
   }>;
   capturedAt: string;
+  recentWindowMs?: number;
+  includeAll?: boolean;
+  includeRoots?: boolean;
 }
 
 export function readWatchSnapshot(
@@ -35,7 +38,10 @@ export function readWatchSnapshot(
   return {
     state,
     processes: selected,
-    capturedAt: new Date().toISOString()
+    capturedAt: new Date().toISOString(),
+    recentWindowMs,
+    includeAll: options.includeAll,
+    includeRoots: options.includeRoots
   };
 }
 
@@ -56,7 +62,8 @@ export function renderWatchFrameWithLayout(
     "duo watch",
     `captured: ${snapshot.capturedAt}`,
     `brake: ${snapshot.state.brake?.active ? snapshot.state.brake.reason : "off"}`,
-    `visible_processes: ${snapshot.processes.length}`
+    `visible_processes: ${snapshot.processes.length}`,
+    `scope: ${describeWatchScope(snapshot)}`
   ].join(" | ");
 
   if (snapshot.processes.length === 0) {
@@ -71,7 +78,7 @@ export function renderWatchFrameWithLayout(
     const body = output.trim() || "[no captured output yet]";
     return [
       "=".repeat(80),
-      describeProcessForWatch(process, visibleProcessIds, knownProcessIds),
+      describeProcessForWatch(process, visibleProcessIds, knownProcessIds, snapshot),
       "-".repeat(80),
       body
     ].join("\n");
@@ -119,7 +126,7 @@ function renderColumnsFrame(snapshot: WatchSnapshot, header: string, terminalWid
   const knownProcessIds = new Set(Object.keys(snapshot.state.processes));
 
   const columns = selected.map(({ process, output }) => {
-    const title = describeProcessForWatch(process, visibleProcessIds, knownProcessIds);
+    const title = describeProcessForWatch(process, visibleProcessIds, knownProcessIds, snapshot);
     const body = (output.trim() || "[no captured output yet]").split("\n");
     return fitBlock([title, "-".repeat(Math.max(10, columnWidth - 2)), ...body], columnWidth);
   });
@@ -215,11 +222,13 @@ function hasVisibleHierarchy(processes: WatchSnapshot["processes"], visibleProce
 function describeProcessForWatch(
   processRecord: DuoProcess,
   visibleProcessIds: Set<string>,
-  knownProcessIds: Set<string>
+  knownProcessIds: Set<string>,
+  snapshot: WatchSnapshot
 ): string {
   const indent = "  ".repeat(Math.max(0, processRecord.depth - 1));
   const relation = describeProcessRelation(processRecord, visibleProcessIds, knownProcessIds);
-  return `${indent}${relation} ${processRecord.name} | ${processRecord.id} | ${processRecord.runtime} | ${processRecord.status} | depth=${processRecord.depth}`;
+  const reviewNote = describeReviewRetention(processRecord, snapshot);
+  return `${indent}${relation} ${processRecord.name} | ${processRecord.id} | ${processRecord.runtime} | ${processRecord.status}${reviewNote} | depth=${processRecord.depth}`;
 }
 
 function describeProcessRelation(
@@ -238,4 +247,35 @@ function describeProcessRelation(
 
 function byCreatedAt(left: DuoProcess, right: DuoProcess): number {
   return left.createdAt.localeCompare(right.createdAt);
+}
+
+function describeReviewRetention(processRecord: DuoProcess, snapshot: WatchSnapshot): string {
+  if (processRecord.status === "running" || processRecord.status === "blocked") {
+    return "";
+  }
+  const updatedAt = Date.parse(processRecord.updatedAt);
+  const capturedAt = Date.parse(snapshot.capturedAt);
+  if (!Number.isFinite(updatedAt) || !Number.isFinite(capturedAt)) {
+    return "";
+  }
+  const ageMs = Math.max(0, capturedAt - updatedAt);
+  if (ageMs > resolveRecentWindowMs(snapshot)) {
+    return "";
+  }
+  return ` [finished ${Math.round(ageMs / 1000)}s ago, kept for review]`;
+}
+
+function resolveRecentWindowMs(snapshot: WatchSnapshot): number {
+  return snapshot.recentWindowMs ?? 2 * 60 * 1000;
+}
+
+function describeWatchScope(snapshot: WatchSnapshot): string {
+  const reviewWindow = `${Math.round(resolveRecentWindowMs(snapshot) / 1000)}s`;
+  if (snapshot.includeAll) {
+    return `all duo processes + finished processes kept ${reviewWindow} for review`;
+  }
+  if (snapshot.includeRoots) {
+    return `root and child agents + finished processes kept ${reviewWindow} for review`;
+  }
+  return `active child agents + finished children kept ${reviewWindow} for review`;
 }

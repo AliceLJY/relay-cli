@@ -241,6 +241,38 @@ test("shouldShowInWatch keeps recently finished processes visible", () => {
   );
 });
 
+test("renderWatchFrame marks recently finished children kept for review", () => {
+  const state = defaultState("/tmp/duo-watch");
+  state.processes.proc_recent = {
+    id: "proc_recent",
+    runtime: "claude",
+    name: "recent closed",
+    status: "closed",
+    parentId: "proc_parent",
+    depth: 2,
+    tmuxSession: "demo",
+    cwd: "/tmp/duo-watch",
+    createdAt: "2026-04-24T00:00:00.000Z",
+    updatedAt: "2026-04-24T00:01:00.000Z",
+    failureCount: 0
+  };
+
+  const frame = renderWatchFrame({
+    state,
+    capturedAt: "2026-04-24T00:01:30.000Z",
+    recentWindowMs: 60_000,
+    processes: [
+      {
+        process: state.processes.proc_recent,
+        output: "DONE"
+      }
+    ]
+  });
+
+  assert.match(frame, /finished 30s ago, kept for review/);
+  assert.match(frame, /finished children kept 60s for review/);
+});
+
 test("shouldShowInWatch hides root parents by default", () => {
   const rootParent = {
     id: "proc_parent",
