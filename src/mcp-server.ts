@@ -161,21 +161,23 @@ export async function startMcpServer(projectRoot = projectRootFrom()): Promise<v
       const result = runMcpTool<{ ok: true; processId: string; status?: string }>(
         projectRoot,
         (current) => {
-          const reconciled = applyRuntimeLimitsWithReconcile(current);
-          const target = reconciled.processes[input.processId];
+          // No reconcile here: cancel is a mutation that doesn't depend on
+          // tmux liveness for its decision. Paying N tmux has-session probes
+          // every cancel call only buys "marginally fresher status before
+          // short-circuit" — not worth it. Short-circuit still defends
+          // against re-marking an already-terminal process.
+          const target = current.processes[input.processId];
           if (!target) {
             throw new Error(`unknown process: ${input.processId}`);
           }
-          // If reconcile already marked the process closed (tmux session was
-          // gone), don't overwrite that terminal state with "cancelled".
           if (target.status !== "running" && target.status !== "blocked") {
             return {
-              state: reconciled,
+              state: current,
               result: { ok: true, processId: input.processId, status: target.status }
             };
           }
           return {
-            state: cancelAgent(reconciled, input.processId),
+            state: cancelAgent(current, input.processId),
             result: { ok: true, processId: input.processId }
           };
         }
@@ -194,22 +196,22 @@ export async function startMcpServer(projectRoot = projectRootFrom()): Promise<v
       const result = runMcpTool<{ ok: true; processId: string; status?: string }>(
         projectRoot,
         (current) => {
-          const reconciled = applyRuntimeLimitsWithReconcile(current);
-          const target = reconciled.processes[input.processId];
+          // No reconcile here either: close is a mutation, not a query.
+          // The short-circuit below makes already-terminal processes a
+          // no-op so we don't run tmux kill-session against an absent pane
+          // and emit a misleading tmux_close_failed event.
+          const target = current.processes[input.processId];
           if (!target) {
             throw new Error(`unknown process: ${input.processId}`);
           }
-          // Already in a terminal state (e.g. reconcile downgraded a vanished
-          // session to closed). No-op rather than re-running tmux kill-session
-          // and emitting a confusing tmux_close_failed event for an absent pane.
           if (target.status !== "running" && target.status !== "blocked") {
             return {
-              state: reconciled,
+              state: current,
               result: { ok: true, processId: input.processId, status: target.status }
             };
           }
           return {
-            state: closeProcess(reconciled, input.processId),
+            state: closeProcess(current, input.processId),
             result: { ok: true, processId: input.processId }
           };
         }
