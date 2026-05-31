@@ -16,6 +16,6 @@ rsync -a \
   "$ROOT/" \
   "$TARGET_HOST:$TARGET_DIR/"
 
-ssh "$TARGET_HOST" "cd '$TARGET_DIR' && npm ci && npm run check && npm link && duo status"
+ssh "$TARGET_HOST" "cd '$TARGET_DIR' && npm ci && npm run check && npm link && duo list"
 ssh "$TARGET_HOST" "codex mcp get duo >/dev/null 2>&1 || codex mcp add duo -- '$DUO_BIN' mcp"
 ssh "$TARGET_HOST" "cd '$TARGET_DIR' && if [ -x '$CLAUDE_BIN' ]; then '$CLAUDE_BIN' mcp get duo >/dev/null 2>&1 || '$CLAUDE_BIN' mcp add -s project duo -- '$DUO_BIN' mcp; fi"
