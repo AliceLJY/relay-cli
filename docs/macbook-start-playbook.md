@@ -1,5 +1,9 @@
 # MacBook Start Playbook
 
+> ⚠️ **Archived (2026-06).** relay-cli/duo is deprecated; this playbook is kept for history only.
+> For current collaboration use [agent-room-cli](https://github.com/AliceLJY/agent-room-cli) (shared room)
+> + trio-handoff (formal review handoff). The `duo start` steps below are no longer recommended.
+
 ## Core Rule
 
 Start one parent agent. The parent owns the task and should actively pull a child agent at meaningful action checkpoints for scoped review, diagnosis, or implementation slices.

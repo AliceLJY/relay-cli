@@ -27,6 +27,14 @@ const ACTIVE_STATUSES = new Set(["running", "blocked"]);
 
 const program = new Command();
 
+// Deprecation notice (2026-06): relay-cli/duo is archived and no longer maintained.
+// Kept runnable for history; use agent-room-cli for collaboration. Skipped in MCP stdio mode.
+if (!process.argv.includes("mcp")) {
+  console.error(
+    "⚠️  relay-cli/duo is deprecated (2026-06) and no longer maintained — use agent-room-cli: https://github.com/AliceLJY/agent-room-cli"
+  );
+}
+
 program
   .name("duo")
   .description("Local Codex/Claude parent-child relay.")

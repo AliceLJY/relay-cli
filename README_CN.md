@@ -1,5 +1,8 @@
 # relay-cli
 
+> ⚠️ **已弃用（2026-06）。** relay-cli 不再维护。本地 Codex ↔ Claude 协作请改用
+> [agent-room-cli](https://github.com/AliceLJY/agent-room-cli)。
+
 `relay-cli` 是一个很小的本地控制层，用来做 Codex/Claude 委派。人直接使用的 CLI 命令面保持很窄。
 
 ## 命令
