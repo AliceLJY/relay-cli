@@ -1,5 +1,9 @@
 # relay-cli
 
+> ⚠️ **Deprecated (2026-06).** relay-cli is no longer maintained. For local
+> Codex ↔ Claude collaboration, use
+> [agent-room-cli](https://github.com/AliceLJY/agent-room-cli).
+
 `relay-cli` is a small local control plane for Codex/Claude delegation. It keeps the human-facing CLI intentionally narrow.
 
 ## Commands
