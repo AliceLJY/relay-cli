@@ -1,6 +1,6 @@
 # relay-cli
 
-> ⚠️ **已弃用（2026-06）。** relay-cli 不再维护。本地 Codex ↔ Claude 协作请改用
+> **已归档：** 本仓库仅作为历史快照保留，并非当前维护中的实现。本地 Codex ↔ Claude 协作请改用
 > [agent-room-cli](https://github.com/AliceLJY/agent-room-cli)。
 
 `relay-cli` 是一个很小的本地控制层，用来做 Codex/Claude 委派。人直接使用的 CLI 命令面保持很窄。
@@ -30,7 +30,7 @@ duo watch
 
 关键默认是：父 agent 对结果负责，并把子 agent 委派当成常规检查点。Alice 不需要像 room 工作流那样手动 @ 或路由另一个 agent。
 
-## 当前 MVP
+## 最终 v0.1.0 快照
 
 - 通过 `duo start --parent` 起一个选定父 agent
 - 通过 `duo list` 查看活跃父 agent
@@ -69,7 +69,8 @@ npm run install:macbook
 
 ## 状态
 
-这是一个个人实验级的工具。能用，也在持续打磨，API 表面可能没有 deprecation notice 就直接变动。
+这个实验已经归档，并由 [agent-room-cli](https://github.com/AliceLJY/agent-room-cli)
+接替；其余文档描述的是最终 v0.1.0 快照。
 
 ## License
 

@@ -1,7 +1,7 @@
 # relay-cli
 
-> ⚠️ **Deprecated (2026-06).** relay-cli is no longer maintained. For local
-> Codex ↔ Claude collaboration, use
+> **Archived:** This repository is preserved as a historical snapshot and is not
+> a currently maintained implementation. For local Codex ↔ Claude collaboration, use
 > [agent-room-cli](https://github.com/AliceLJY/agent-room-cli).
 
 `relay-cli` is a small local control plane for Codex/Claude delegation. It keeps the human-facing CLI intentionally narrow.
@@ -31,7 +31,7 @@ This is not `agent-room-cli`.
 
 The important default is: one parent owns the task, and child delegation is a routine checkpoint. Alice should not have to mention or route another agent the way a room workflow would.
 
-## Current MVP
+## Final v0.1.0 Snapshot
 
 - Starts one chosen parent through `duo start --parent`.
 - Lists active parent agents through `duo list`.
@@ -74,7 +74,9 @@ See [README_CN.md](./README_CN.md).
 
 ## Status
 
-This is a personal experiment-grade tool. It works, it is under active shaping, and the surface may shift without deprecation notices.
+This experiment is archived and superseded by
+[agent-room-cli](https://github.com/AliceLJY/agent-room-cli). The remaining
+documentation describes the final v0.1.0 snapshot.
 
 ## License
 
